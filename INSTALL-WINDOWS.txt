@@ -1,0 +1,171 @@
+================================================================
+  IMAGE SCRAPER - GHID INSTALARE WINDOWS SERVER
+================================================================
+
+
+1. CERINTE
+----------------------------------------------------------------
+- Windows Server 2016+ (sau Windows 10/11 pentru test)
+- Python 3.10+ (se instaleaza automat daca lipseste)
+- Minim 4GB RAM (8GB daca folosesti CLIP)
+- Minim 2GB spatiu pe disk
+- Port 8080 deschis in firewall
+
+
+2. INSTALARE PYTHON (OPTIONAL - SE FACE AUTOMAT)
+----------------------------------------------------------------
+deploy-windows.bat instaleaza Python automat daca nu e gasit.
+
+Daca preferi manual, descarca de pe: https://www.python.org/downloads/
+IMPORTANT: bifeaza "Add python.exe to PATH" la instalare.
+
+
+3. COPIAZA APLICATIA PE SERVER
+----------------------------------------------------------------
+Copiaza folderul image-scraper pe server, ex:
+  C:\Apps\image-scraper\
+
+Fisiere necesare:
+  app.py              - backend Flask
+  index.html          - pagina principala
+  static\style.css    - stiluri
+  static\app.js       - logica frontend
+  deploy-windows.bat  - script instalare automata
+  requirements.txt    - lista dependente
+
+
+4. RULEAZA DEPLOY-WINDOWS.BAT
+----------------------------------------------------------------
+Deschide Command Prompt (cmd) sau PowerShell:
+
+  cd C:\Apps\image-scraper
+  deploy-windows.bat
+
+Sau: double-click pe deploy-windows.bat din Explorer.
+
+Scriptul face automat (inclusiv instalare Python daca lipseste):
+  - Creaza virtual environment (venv)
+  - Instaleaza toate dependentele
+  - Instaleaza PyTorch + CLIP
+  - Descarca modelul AI (~350MB, o singura data)
+
+Dureaza 5-10 minute.
+
+
+5. TEST RAPID
+----------------------------------------------------------------
+Dupa deploy.bat, porneste serverul:
+
+  venv\Scripts\python.exe app.py --port 8080
+
+Deschide browser: http://localhost:8080
+
+Daca vezi interfata Image Scraper, totul e OK.
+Opreste cu Ctrl+C.
+
+
+6. DEPLOY PRODUCTIE
+----------------------------------------------------------------
+
+6a. Instaleaza Waitress (server de productie)
+  venv\Scripts\python.exe -m pip install waitress
+
+Porneste cu:
+  venv\Scripts\python.exe -m waitress --port=8080 --threads=4 app:app
+
+6b. Creaza Windows Service (pornire automata la restart)
+
+  1. Descarca NSSM: https://nssm.cc/download
+  2. Extrage nssm.exe in C:\Apps\nssm\
+  3. Deschide cmd ca Administrator:
+
+     C:\Apps\nssm\nssm.exe install ImageScraper
+
+  4. In fereastra NSSM, completeaza:
+     Path:              C:\Apps\image-scraper\venv\Scripts\python.exe
+     Startup directory: C:\Apps\image-scraper
+     Arguments:         -m waitress --port=8080 --threads=4 app:app
+
+  5. Click "Install service"
+
+  6. Porneste serviciul:
+     net start ImageScraper
+
+
+6c. Comenzi serviciu
+  net start ImageScraper          Porneste
+  net stop ImageScraper           Opreste
+  nssm restart ImageScraper       Reporneste
+  nssm status ImageScraper        Status
+  nssm remove ImageScraper        Dezinstaleaza
+
+
+7. CONFIGURARE FIREWALL
+----------------------------------------------------------------
+Deschide portul 8080:
+
+  netsh advfirewall firewall add rule name="ImageScraper" dir=in action=allow protocol=tcp localport=8080
+
+Acum e accesibil din retea la:
+  http://IP-SERVER:8080
+
+
+8. ACCES DIN EXTERIOR (OPTIONAL)
+----------------------------------------------------------------
+
+Optiunea A: Domeniu propriu + IIS Reverse Proxy
+  1. Instaleaza URL Rewrite + ARR in IIS
+  2. Creaza site nou in IIS
+  3. Adauga regula reverse proxy catre http://localhost:8080
+  4. Configureaza certificat SSL pentru HTTPS
+
+Optiunea B: ngrok (rapid, pentru test)
+  1. Descarca: https://ngrok.com
+  2. Ruleaza: ngrok http 8080
+  3. Primesti URL public (ex: https://abc123.ngrok.io)
+  Nota: URL-ul se schimba la fiecare restart (plan gratuit)
+
+Optiunea C: Cloudflare Tunnel (gratuit, permanent)
+  1. Cont Cloudflare (gratuit)
+  2. Adauga domeniul in Cloudflare
+  3. Instaleaza cloudflared pe server
+  4. Configureaza tunnel catre localhost:8080
+  Primesti HTTPS automat si URL permanent.
+
+
+9. ACTUALIZARE
+----------------------------------------------------------------
+Cand ai o versiune noua:
+
+  net stop ImageScraper
+  :: Copiaza fisierele noi (app.py, index.html, static/)
+  venv\Scripts\python.exe -m pip install -r requirements.txt
+  net start ImageScraper
+
+
+10. LOGURI
+----------------------------------------------------------------
+Configureaza loguri prin NSSM:
+
+  nssm edit ImageScraper
+
+In tabul "I/O", seteaza:
+  Output (stdout): C:\Apps\image-scraper\logs\stdout.log
+  Error (stderr):  C:\Apps\image-scraper\logs\stderr.log
+
+Nu uita sa creezi folderul logs:
+  mkdir C:\Apps\image-scraper\logs
+
+
+11. REZUMAT COMENZI
+----------------------------------------------------------------
+deploy-windows.bat                                  Instalare
+venv\Scripts\python.exe app.py --port 8080          Pornire dev
+venv\Scripts\python.exe -m waitress --port=8080 --threads=4 app:app   Pornire prod
+net start ImageScraper                              Pornire serviciu
+net stop ImageScraper                               Oprire serviciu
+http://localhost:8080                               Acces local
+http://IP-SERVER:8080                               Acces retea
+
+
+================================================================

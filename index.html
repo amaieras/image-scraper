@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Image Scraper - Hermes B2B</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+
+<div class="app">
+  <button class="theme-toggle" onclick="toggleTheme()" title="Schimbă tema">
+    <i data-lucide="sun" id="themeIconLight" style="display:none;"></i>
+    <i data-lucide="moon" id="themeIconDark"></i>
+  </button>
+  <div class="header">
+    <h1>Image <span>Scraper</span></h1>
+    <p>Caută, evaluează și descarcă imagini de produs</p>
+  </div>
+
+  <div class="main-grid">
+    <!-- LEFT COLUMN -->
+    <div class="left-col">
+
+      <!-- Product Input -->
+      <div class="card">
+        <div class="card-title"><i data-lucide="list" class="icon"></i> Lista Produse</div>
+
+        <div class="input-tabs">
+          <div class="input-tab active" onclick="switchTab('text')" data-tab="text">Text Liber</div>
+          <div class="input-tab" onclick="switchTab('file')" data-tab="file">Import Fișier</div>
+        </div>
+
+        <!-- Tab: Free text -->
+        <div id="tabText">
+          <textarea id="productInput" class="product-input"
+            placeholder="Lipește denumirile produselor aici, câte una pe linie...&#10;&#10;Exemplu:&#10;Cafea LAVAZZA PAULISTA 1kg boabe&#10;Coca-Cola 0.33L doza&#10;Heineken 0.5L sticla"></textarea>
+        </div>
+
+        <!-- Tab: File import -->
+        <div id="tabFile" style="display:none;">
+          <div class="drop-zone" id="dropZone">
+            <input type="file" id="fileInput"
+              accept=".xlsx,.xls,.csv,.tsv,.txt,.docx,.pdf"
+              onchange="handleFileSelect(this.files[0])">
+            <div class="drop-icon"><i data-lucide="upload" style="width:32px;height:32px;"></i></div>
+            <div class="drop-text">
+              Trage un fișier aici sau <strong>click pentru a selecta</strong>
+            </div>
+            <div class="drop-formats">
+              xlsx &bull; csv &bull; tsv &bull; txt &bull; docx &bull; pdf
+            </div>
+          </div>
+          <div id="fileBadge" class="file-badge" style="display:none;"></div>
+        </div>
+
+        <div class="input-footer">
+          <span id="lineCount">0 products</span>
+          <button class="btn btn-sm btn-ghost" onclick="clearInput()">Șterge</button>
+        </div>
+      </div>
+
+      <!-- Progress -->
+      <div id="progressSection" class="progress-section card">
+        <div class="card-title"><i data-lucide="activity" class="icon"></i> Progres</div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span id="progressLabel">Starting...</span>
+          <span style="display:flex;gap:12px;">
+            <span id="timerDisplay" style="color:var(--accent-light);font-family:'SF Mono',monospace;">00:00</span>
+            <span id="progressPercent">0%</span>
+          </span>
+        </div>
+        <div class="progress-bar-container">
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+        <div class="progress-stats">
+          <div class="stat-box">
+            <div id="statTotal" class="stat-value info">0</div>
+            <div class="stat-label">Total</div>
+          </div>
+          <div class="stat-box">
+            <div id="statDone" class="stat-value" style="color:var(--text)">0</div>
+            <div class="stat-label">Procesate</div>
+          </div>
+          <div class="stat-box">
+            <div id="statSuccess" class="stat-value success">0</div>
+            <div class="stat-label">Reușite</div>
+          </div>
+          <div class="stat-box">
+            <div id="statFailed" class="stat-value danger">0</div>
+            <div class="stat-label">Eșuate</div>
+          </div>
+        </div>
+
+        <div id="currentProduct" class="current-product">
+          <div class="name" id="currentName">-</div>
+          <div class="detail" id="currentDetail">Searching...</div>
+        </div>
+
+        <div id="logContainer" class="log-container"></div>
+      </div>
+
+      <!-- Results -->
+      <div id="resultsSection" class="results-section">
+        <div class="card">
+          <div class="card-title"><i data-lucide="images" class="icon"></i> Rezultate</div>
+          <div id="resultsGrid" class="results-grid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN - Config -->
+    <div class="right-col">
+      <div class="card">
+        <div class="card-title"><i data-lucide="settings" class="icon"></i> Configurare</div>
+
+        <!-- Quality Preset -->
+        <div class="config-group">
+          <div class="config-label">
+            Preset Calitate
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Setări predefinite care ajustează mai multe valori deodată. Rapid = viteză maximă, Calitate = precizie maximă.</span>
+            </span>
+          </div>
+          <div class="preset-chips">
+            <span class="chip" onclick="applyPreset('fast')" data-preset="fast">Rapid</span>
+            <span class="chip" onclick="applyPreset('balanced')" data-preset="balanced">Echilibrat</span>
+            <span class="chip active" onclick="applyPreset('quality')" data-preset="quality">Calitate Înaltă</span>
+          </div>
+        </div>
+
+        <!-- Priority Sites -->
+        <div class="config-group">
+          <div class="config-label">
+            Site-uri Prioritare
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Se caută mai întâi pe aceste site-uri. Dacă nu găsește, trece la căutare generală. Poți pune URL-uri complete sau doar domenii.</span>
+            </span>
+            <span class="value" id="siteCount" style="font-weight:400;font-size:11px;">se caută întâi</span>
+          </div>
+          <textarea id="prioritySites" class="product-input" style="min-height:80px;font-size:12px;"
+            placeholder="Un domeniu pe linie (se caută întâi aici, apoi general)&#10;&#10;Exemplu:&#10;amazon.com&#10;emag.ro&#10;carrefour.ro"
+            oninput="updateSiteCount()"></textarea>
+        </div>
+
+        <!-- Min Quality Score -->
+        <div class="config-group">
+          <div class="config-label">
+            Scor Calitate Minim
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Imaginile sub acest scor sunt respinse. Scorul analizează rezoluția, claritatea, culorile și dimensiunea fișierului.</span>
+            </span>
+            <span class="value" id="qualityScoreVal">60</span>
+          </div>
+          <input type="range" id="minQualityScore" min="10" max="90" value="60"
+            oninput="document.getElementById('qualityScoreVal').textContent=this.value">
+        </div>
+
+        <!-- Min Resolution -->
+        <div class="config-group">
+          <div class="config-label">
+            Rezoluție Minimă Sursă (px)
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Dimensiunea minimă a imaginii originale. O sursă mare redimensionată la mic arată mai clar decât una mică de la început.</span>
+            </span>
+            <span class="value" id="minResVal">600</span>
+          </div>
+          <input type="range" id="minResolution" min="50" max="1200" value="600" step="50"
+            oninput="document.getElementById('minResVal').textContent=this.value">
+        </div>
+
+        <!-- Output Size -->
+        <div class="config-group">
+          <div class="config-label">
+            Dimensiune Ieșire
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Dimensiunea finală a imaginii salvate (lățime × înălțime în pixeli). Imaginea e centrată pe fundal alb.</span>
+            </span>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <input type="number" id="imageWidth" value="200" min="50" max="2000"
+              style="width:50%" placeholder="Width">
+            <input type="number" id="imageHeight" value="200" min="50" max="2000"
+              style="width:50%" placeholder="Height">
+          </div>
+        </div>
+
+        <!-- Images per product -->
+        <div class="config-group">
+          <div class="config-label">
+            Imagini per Produs
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Câte imagini diferite să salveze pentru fiecare produs. Mai multe = mai multe variante de ales.</span>
+            </span>
+            <span class="value" id="imagesPerVal">1</span>
+          </div>
+          <input type="range" id="imagesPerProduct" min="1" max="5" value="1"
+            oninput="document.getElementById('imagesPerVal').textContent=this.value">
+        </div>
+
+        <!-- Output Format -->
+        <div class="config-group">
+          <div class="config-label">
+            Format Ieșire
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">WebP = cel mai bun pentru web (50% mai mic ca JPEG, suport transparență). JPEG = compatibilitate maximă. PNG = lossless, cel mai mare.</span>
+            </span>
+          </div>
+          <select id="outputFormat" onchange="document.getElementById('qualityGroup').style.display=this.value==='png'?'none':'block'">
+            <option value="webp">WebP (recomandat pentru web)</option>
+            <option value="jpeg" selected>JPEG (compatibilitate maximă)</option>
+            <option value="png">PNG (lossless, fișiere mari)</option>
+          </select>
+        </div>
+
+        <!-- Quality -->
+        <div class="config-group" id="qualityGroup">
+          <div class="config-label">
+            Calitate Compresie
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">95 = calitate excelentă, 70 = fișiere mici. Nu se aplică la PNG (mereu lossless).</span>
+            </span>
+            <span class="value" id="qualityVal">90</span>
+          </div>
+          <input type="range" id="quality" min="50" max="100" value="90"
+            oninput="document.getElementById('qualityVal').textContent=this.value">
+        </div>
+
+        <!-- Search Suffix -->
+        <div class="config-group">
+          <div class="config-label">
+            Sufix Căutare
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Text adăugat automat la căutare. Ajută motoarele să returneze poze de produs, nu articole sau meme-uri.</span>
+            </span>
+          </div>
+          <input type="text" id="searchSuffix" value="product photo" placeholder="e.g. product photo">
+        </div>
+
+        <!-- Max candidates -->
+        <div class="config-group">
+          <div class="config-label">
+            Candidați Maximi per Produs
+            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+              <span class="tip-text">Câte imagini descarcă și evaluează pentru a o alege pe cea mai bună. Mai mulți = rezultate mai precise, dar mai lent.</span>
+            </span>
+            <span class="value" id="maxCandVal">15</span>
+          </div>
+          <input type="range" id="maxCandidates" min="3" max="20" value="15"
+            oninput="document.getElementById('maxCandVal').textContent=this.value">
+        </div>
+
+        <!-- Toggles -->
+        <div class="config-group" style="margin-top:8px;">
+          <input type="hidden" id="checkRelevance" value="true">
+          <div class="toggle-row">
+            <span class="toggle-label">Eliminare Fundal (AI)
+              <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+                <span class="tip-text">Elimină fundalul imaginii și pune produsul pe alb pur. Necesită rembg instalat. E mai lent dar dă rezultate profesionale.</span>
+              </span>
+            </span>
+            <label class="toggle">
+              <input type="checkbox" id="removeBg">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <input type="hidden" id="rejectBlurry" value="true">
+        </div>
+
+        <!-- Advanced (collapsible) -->
+        <div style="margin-top:16px;">
+          <div class="collapsible-header" onclick="toggleAdvanced(this)">
+            <span style="font-size:12px;color:var(--text-dim);font-weight:500;">Avansat / Chei API</span>
+            <span class="arrow" style="color:var(--text-dim);font-size:10px;">&#9660;</span>
+          </div>
+          <div class="collapsible-body" id="advancedSection">
+            <div class="config-group">
+              <div class="config-label">Pexels API Key</div>
+              <input type="text" id="pexelsKey" placeholder="Optional - for stock fallback">
+            </div>
+            <div class="config-group">
+              <div class="config-label">Bing API Key</div>
+              <input type="text" id="bingKey" placeholder="Optional - 1000/month free">
+            </div>
+            <div class="config-group">
+              <div class="config-label">
+                Min Aspect Ratio
+                <span class="value" id="minAspectVal">0.4</span>
+              </div>
+              <input type="range" id="minAspectRatio" min="0.1" max="1" value="0.4" step="0.1"
+                oninput="document.getElementById('minAspectVal').textContent=this.value">
+            </div>
+            <div class="config-group">
+              <div class="config-label">
+                Max Aspect Ratio
+                <span class="value" id="maxAspectVal">2.5</span>
+              </div>
+              <input type="range" id="maxAspectRatio" min="1" max="5" value="2.5" step="0.1"
+                oninput="document.getElementById('maxAspectVal').textContent=this.value">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Start / Stop / Reset Buttons -->
+      <button id="startBtn" class="btn btn-primary" onclick="startScraping()">
+        <i data-lucide="play" style="width:16px;height:16px;"></i> Pornește Căutarea
+      </button>
+      <button id="stopBtn" class="btn btn-primary" onclick="stopScraping()"
+        style="display:none;background:var(--danger);margin-top:8px;">
+        <i data-lucide="square" style="width:16px;height:16px;"></i> Oprește
+      </button>
+      <button id="resetBtn" class="btn btn-ghost" onclick="resetAll()" style="width:100%;margin-top:8px;" disabled>
+        <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Resetează Tot
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+<script>lucide.createIcons();</script>
+</body>
+</html>
