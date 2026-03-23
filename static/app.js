@@ -423,6 +423,28 @@ function resetAll() {
   document.getElementById('resetBtn').disabled = true;
 }
 
+// ─── Font Size (zoom-based) ─────────────────────────────────────────
+const ZOOM_LEVELS = [0.8, 0.9, 1, 1.1, 1.25, 1.4];
+let currentZoomIndex = 2; // default 1 (100%)
+
+function changeFontSize(direction) {
+  currentZoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, currentZoomIndex + direction));
+  applyZoom();
+  localStorage.setItem('zoomLevel', currentZoomIndex);
+}
+
+function applyZoom() {
+  document.documentElement.style.zoom = ZOOM_LEVELS[currentZoomIndex];
+}
+
+(function initFontSize() {
+  const saved = localStorage.getItem('zoomLevel');
+  if (saved !== null) {
+    currentZoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, +saved));
+    applyZoom();
+  }
+})();
+
 // ─── Theme ──────────────────────────────────────────────────────────
 function toggleTheme() {
   const current = document.documentElement.getAttribute('data-theme');

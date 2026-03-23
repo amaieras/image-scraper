@@ -31,19 +31,22 @@
   --info: #3b82f6;
 }
 
-/* ─── Theme toggle ─── */
-.theme-toggle {
+/* ─── Top controls (theme + font size) ─── */
+.top-controls {
   position: absolute; top: 24px; right: 24px;
+  display: flex; gap: 6px; align-items: center;
+}
+.control-btn {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 8px; cursor: pointer;
   color: var(--text-dim); display: flex; align-items: center;
   justify-content: center; transition: all 0.2s;
-  width: 36px; height: 36px;
+  width: 36px; height: 36px; font-size: 13px; font-weight: 600;
 }
-.theme-toggle:hover {
+.control-btn:hover {
   color: var(--accent-light); border-color: var(--accent);
 }
-.theme-toggle svg { width: 18px; height: 18px; }
+.control-btn svg { width: 18px; height: 18px; }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
