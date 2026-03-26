@@ -163,15 +163,20 @@
 
         <!-- Min Resolution -->
         <div class="config-group">
-          <div class="config-label">
-            Rezoluție Minimă Sursă (px)
+          <div class="config-label" style="display:flex;align-items:center;gap:6px;">
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;">
+              <input type="checkbox" id="useMinResolution" onchange="toggleMinRes()"
+                style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+              Rezoluție Minimă Sursă (px)
+            </label>
             <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Dimensiunea minimă a imaginii originale. O sursă mare redimensionată la mic arată mai clar decât una mică de la început.</span>
+              <span class="tip-text">Dacă e bifat, respinge imaginile sub această rezoluție. Dezactivat = acceptă orice rezoluție.</span>
             </span>
-            <span class="value" id="minResVal">600</span>
+            <span class="value" id="minResVal" style="opacity:0.4;">off</span>
           </div>
-          <input type="range" id="minResolution" min="50" max="1200" value="600" step="50"
-            oninput="document.getElementById('minResVal').textContent=this.value">
+          <input type="range" id="minResolution" min="50" max="2000" value="800" step="50"
+            oninput="document.getElementById('minResVal').textContent=this.value"
+            disabled style="opacity:0.35;">
         </div>
 
         <!-- Output Size -->
@@ -183,9 +188,9 @@
             </span>
           </div>
           <div style="display:flex;gap:8px;">
-            <input type="number" id="imageWidth" value="200" min="50" max="2000"
+            <input type="number" id="imageWidth" value="200" min="50" max="4000"
               style="width:50%" placeholder="Width">
-            <input type="number" id="imageHeight" value="200" min="50" max="2000"
+            <input type="number" id="imageHeight" value="200" min="50" max="4000"
               style="width:50%" placeholder="Height">
           </div>
         </div>
@@ -225,9 +230,9 @@
             <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
               <span class="tip-text">95 = calitate excelentă, 70 = fișiere mici. Nu se aplică la PNG (mereu lossless).</span>
             </span>
-            <span class="value" id="qualityVal">90</span>
+            <span class="value" id="qualityVal">98</span>
           </div>
-          <input type="range" id="quality" min="50" max="100" value="90"
+          <input type="range" id="quality" min="50" max="100" value="98"
             oninput="document.getElementById('qualityVal').textContent=this.value">
         </div>
 
@@ -272,6 +277,11 @@
           <input type="hidden" id="rejectBlurry" value="true">
         </div>
 
+        <!-- Hidden keys (loaded from config.json) -->
+        <div style="display:none;">
+          <input type="text" id="geminiKey" value="">
+        </div>
+
         <!-- Advanced (hidden) -->
         <div style="display:none;">
           <input type="text" id="pexelsKey" value="">
@@ -298,5 +308,11 @@
 
 <script src="/static/app.js"></script>
 <script>lucide.createIcons();</script>
+<script>
+// Load saved config (Gemini key) on page load
+fetch('/api/config').then(r=>r.json()).then(cfg=>{
+  if(cfg.gemini_key){document.getElementById('geminiKey').value=cfg.gemini_key;}
+}).catch(()=>{});
+</script>
 </body>
 </html>

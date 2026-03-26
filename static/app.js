@@ -9,9 +9,9 @@ let timerStart = null;
 
 // ─── Presets ────────────────────────────────────────────────────────
 const presets = {
-  fast:     { minQualityScore:20, minResolution:200, maxCandidates:5, imagesPerProduct:1, outputSize:200 },
-  balanced: { minQualityScore:40, minResolution:400, maxCandidates:10, imagesPerProduct:1, outputSize:200 },
-  quality:  { minQualityScore:60, minResolution:600, maxCandidates:15, imagesPerProduct:1, outputSize:200 },
+  fast:     { minQualityScore:20, minResolution:400, maxCandidates:5, imagesPerProduct:1, outputSize:200, quality:90 },
+  balanced: { minQualityScore:40, minResolution:600, maxCandidates:10, imagesPerProduct:1, outputSize:200, quality:95 },
+  quality:  { minQualityScore:60, minResolution:800, maxCandidates:15, imagesPerProduct:1, outputSize:200, quality:98 },
 };
 
 function applyPreset(name) {
@@ -20,6 +20,9 @@ function applyPreset(name) {
   document.getElementById('minQualityScore').value = p.minQualityScore;
   document.getElementById('qualityScoreVal').textContent = p.minQualityScore;
   document.getElementById('minResolution').value = p.minResolution;
+  // If preset is applied, enable the min resolution checkbox and update display
+  document.getElementById('useMinResolution').checked = true;
+  toggleMinRes();
   document.getElementById('minResVal').textContent = p.minResolution;
   document.getElementById('maxCandidates').value = p.maxCandidates;
   document.getElementById('maxCandVal').textContent = p.maxCandidates;
@@ -29,8 +32,30 @@ function applyPreset(name) {
     document.getElementById('imageWidth').value = p.outputSize;
     document.getElementById('imageHeight').value = p.outputSize;
   }
+  if (p.quality) {
+    document.getElementById('quality').value = p.quality;
+    document.getElementById('qualityVal').textContent = p.quality;
+  }
   document.querySelectorAll('.chip').forEach(c =>
     c.classList.toggle('active', c.dataset.preset === name));
+}
+
+// ─── Min Resolution toggle ──────────────────────────────────────────
+function toggleMinRes() {
+  const cb = document.getElementById('useMinResolution');
+  const slider = document.getElementById('minResolution');
+  const valLabel = document.getElementById('minResVal');
+  if (cb.checked) {
+    slider.disabled = false;
+    slider.style.opacity = '1';
+    valLabel.style.opacity = '1';
+    valLabel.textContent = slider.value;
+  } else {
+    slider.disabled = true;
+    slider.style.opacity = '0.35';
+    valLabel.style.opacity = '0.4';
+    valLabel.textContent = 'off';
+  }
 }
 
 // ─── Input helpers ──────────────────────────────────────────────────
@@ -127,7 +152,9 @@ function getConfig() {
 
   return {
     min_quality_score:  +document.getElementById('minQualityScore').value,
-    min_resolution:     +document.getElementById('minResolution').value,
+    min_resolution:     document.getElementById('useMinResolution').checked
+                          ? +document.getElementById('minResolution').value
+                          : 1,
     image_width:        +document.getElementById('imageWidth').value,
     image_height:       +document.getElementById('imageHeight').value,
     images_per_product: +document.getElementById('imagesPerProduct').value,
@@ -140,6 +167,8 @@ function getConfig() {
     reject_blurry:      true,
     pexels_key:         document.getElementById('pexelsKey').value,
     bing_key:           document.getElementById('bingKey').value,
+    anthropic_key:      '',
+    gemini_key:         document.getElementById('geminiKey').value,
     min_aspect_ratio:   +document.getElementById('minAspectRatio').value,
     max_aspect_ratio:   +document.getElementById('maxAspectRatio').value,
     priority_sites:     prioritySites,
@@ -353,7 +382,8 @@ function addResultCard(data) {
   if (data.images && data.images.length > 0) {
     data.images.forEach(img => {
       if (img.thumbnail) {
-        imagesHtml += `<img class="result-img" src="data:image/jpeg;base64,${img.thumbnail}" title="Score: ${img.quality_score}">`;
+        const imgUrl = img.image_url || '';
+        imagesHtml += `<img class="result-img" src="data:image/jpeg;base64,${img.thumbnail}" title="Score: ${img.quality_score}" onclick="openLightbox('${imgUrl.replace(/'/g, "\\'")}')" style="cursor:zoom-in">`;
       }
     });
   } else {
@@ -384,6 +414,27 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+// ─── Lightbox ────────────────────────────────────────────────────────
+function openLightbox(url) {
+  if (!url) return;
+  let overlay = document.getElementById('lightboxOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'lightboxOverlay';
+    overlay.innerHTML = '<img id="lightboxImg" src="">';
+    overlay.addEventListener('click', () => overlay.style.display = 'none');
+    document.body.appendChild(overlay);
+  }
+  document.getElementById('lightboxImg').src = url;
+  overlay.style.display = 'flex';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const o = document.getElementById('lightboxOverlay');
+    if (o) o.style.display = 'none';
+  }
+});
+
 // ─── Reset All ──────────────────────────────────────────────────────
 function resetAll() {
   // Clear inputs
@@ -394,11 +445,15 @@ function resetAll() {
   // Reset config to High Quality defaults
   applyPreset('quality');
 
+  // Min resolution OFF by default (user can enable it)
+  document.getElementById('useMinResolution').checked = false;
+  toggleMinRes();
+
   // Reset other fields
   document.getElementById('searchSuffix').value = 'product photo';
   document.getElementById('outputFormat').value = 'jpeg';
-  document.getElementById('quality').value = 90;
-  document.getElementById('qualityVal').textContent = '90';
+  document.getElementById('quality').value = 98;
+  document.getElementById('qualityVal').textContent = '98';
   document.getElementById('qualityGroup').style.display = 'block';
   document.getElementById('removeBg').checked = false;
   document.getElementById('pexelsKey').value = '';
