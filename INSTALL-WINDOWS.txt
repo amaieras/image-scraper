@@ -29,7 +29,12 @@ Fisiere necesare:
   app.py              - backend Flask
   index.html          - pagina principala
   static\style.css    - stiluri
-  static\app.js       - logica frontend
+  static\state.js     - stare globala si utilitati
+  static\ui.js        - stats, log, lightbox, tema
+  static\approval.js  - selectie imagini, aprobare
+  static\replace.js   - inlocuire imagine (URL download)
+  static\scraper.js   - start/stop scraping, SSE, carduri rezultate
+  static\app.js       - config, preseturi, input, tabs, init
   deploy-windows.bat  - script instalare automata
   requirements.txt    - lista dependente
 

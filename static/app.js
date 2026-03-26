@@ -1,13 +1,9 @@
-// ─── State ──────────────────────────────────────────────────────────
-let currentJobId = null;
-let eventSource = null;
-let stats = { total: 0, done: 0, success: 0, failed: 0, images: 0 };
-let activeTab = 'text';
-let fileProducts = [];
-let timerInterval = null;
-let timerStart = null;
+// ─── App: Presets, Config, Input, Tabs, Drag & Drop, Reset ─────────
+// Depends on: state.js, ui.js, scraper.js, approval.js, replace.js
+// This is the main entry point — loaded last.
 
 // ─── Presets ────────────────────────────────────────────────────────
+
 const presets = {
   fast:     { minQualityScore:20, minResolution:400, maxCandidates:5, imagesPerProduct:1, outputSize:200, quality:90 },
   balanced: { minQualityScore:40, minResolution:600, maxCandidates:10, imagesPerProduct:1, outputSize:200, quality:95 },
@@ -20,7 +16,6 @@ function applyPreset(name) {
   document.getElementById('minQualityScore').value = p.minQualityScore;
   document.getElementById('qualityScoreVal').textContent = p.minQualityScore;
   document.getElementById('minResolution').value = p.minResolution;
-  // If preset is applied, enable the min resolution checkbox and update display
   document.getElementById('useMinResolution').checked = true;
   toggleMinRes();
   document.getElementById('minResVal').textContent = p.minResolution;
@@ -41,6 +36,7 @@ function applyPreset(name) {
 }
 
 // ─── Min Resolution toggle ──────────────────────────────────────────
+
 function toggleMinRes() {
   const cb = document.getElementById('useMinResolution');
   const slider = document.getElementById('minResolution');
@@ -59,6 +55,7 @@ function toggleMinRes() {
 }
 
 // ─── Input helpers ──────────────────────────────────────────────────
+
 const productInput = document.getElementById('productInput');
 productInput.addEventListener('input', updateLineCount);
 
@@ -66,7 +63,6 @@ function updateLineCount() {
   const lines = productInput.value.trim().split('\n').filter(l => l.trim());
   document.getElementById('lineCount').textContent =
     `${lines.length} produs${lines.length !== 1 ? 'e' : ''}`;
-  // Enable reset when there's any input or results
   const hasContent = lines.length > 0 ||
     document.getElementById('progressSection').classList.contains('active');
   document.getElementById('resetBtn').disabled = !hasContent;
@@ -81,6 +77,7 @@ function clearInput() {
 }
 
 // ─── Tabs ───────────────────────────────────────────────────────────
+
 function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.input-tab').forEach(t =>
@@ -91,6 +88,7 @@ function switchTab(tab) {
 }
 
 // ─── Drag & Drop ────────────────────────────────────────────────────
+
 const dropZone = document.getElementById('dropZone');
 
 ['dragenter', 'dragover'].forEach(evt =>
@@ -139,6 +137,7 @@ async function handleFileSelect(file) {
 }
 
 // ─── Priority Sites ─────────────────────────────────────────────────
+
 function updateSiteCount() {
   const lines = document.getElementById('prioritySites').value.trim().split('\n').filter(l => l.trim());
   const el = document.getElementById('siteCount');
@@ -146,6 +145,7 @@ function updateSiteCount() {
 }
 
 // ─── Config ─────────────────────────────────────────────────────────
+
 function getConfig() {
   const sitesRaw = document.getElementById('prioritySites').value.trim();
   const prioritySites = sitesRaw ? sitesRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
@@ -176,280 +176,21 @@ function getConfig() {
 }
 
 // ─── Toggle advanced ────────────────────────────────────────────────
+
 function toggleAdvanced(el) {
   el.classList.toggle('open');
   document.getElementById('advancedSection').classList.toggle('open');
 }
 
-// ─── Timer ──────────────────────────────────────────────────────────
-function startTimer() {
-  timerStart = Date.now();
-  updateTimerDisplay();
-  timerInterval = setInterval(updateTimerDisplay, 1000);
-}
-
-function stopTimer() {
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-}
-
-function updateTimerDisplay() {
-  if (!timerStart) return;
-  const elapsed = Math.floor((Date.now() - timerStart) / 1000);
-  const m = Math.floor(elapsed / 60);
-  const s = elapsed % 60;
-  document.getElementById('timerDisplay').textContent =
-    `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-function formatDuration(ms) {
-  const secs = Math.floor(ms / 1000);
-  if (secs < 60) return `${secs}s`;
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}m ${s}s`;
-}
-
-// ─── Start / Stop ───────────────────────────────────────────────────
-async function startScraping() {
-  const text = productInput.value.trim();
-  if (!text) { alert('Adaugă produse mai întâi!'); return; }
-
-  const lines = text.split('\n').filter(l => l.trim());
-  const products = lines.map((line, i) => ({ id: String(i + 1), denumire: line.trim() }));
-  const config = getConfig();
-
-  // Reset UI
-  stats = { total: products.length, done: 0, success: 0, failed: 0, images: 0 };
-  document.getElementById('progressSection').classList.add('active');
-  document.getElementById('resultsSection').classList.remove('active');
-  document.getElementById('resultsGrid').innerHTML = '';
-  document.getElementById('logContainer').innerHTML = '';
-  document.getElementById('startBtn').disabled = true;
-  document.getElementById('startBtn').style.display = 'none';
-  document.getElementById('stopBtn').style.display = 'block';
-  document.getElementById('stopBtn').disabled = false;
-  document.getElementById('stopBtn').innerHTML = '<i data-lucide="square" style="width:16px;height:16px;"></i> Oprește';
-  document.getElementById('resetBtn').disabled = true;
-  if (typeof lucide !== 'undefined') lucide.createIcons();
-  startTimer();
-  updateStats();
-
-  try {
-    const resp = await fetch('/api/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ products, config }),
-    });
-    const data = await resp.json();
-    if (data.error) { alert(data.error); resetBtn(); return; }
-
-    currentJobId = data.job_id;
-    listenToEvents(data.job_id);
-  } catch (err) {
-    alert('Failed to start: ' + err.message);
-    resetBtn();
-  }
-}
-
-function resetBtn() {
-  document.getElementById('startBtn').disabled = false;
-  document.getElementById('startBtn').innerHTML = '<i data-lucide="play" style="width:16px;height:16px;"></i> Pornește Căutarea';
-  if (typeof lucide !== 'undefined') lucide.createIcons();
-  document.getElementById('startBtn').style.display = 'block';
-  document.getElementById('stopBtn').style.display = 'none';
-  document.getElementById('resetBtn').disabled = false;
-  stopTimer();
-}
-
-async function stopScraping() {
-  if (!currentJobId) return;
-  try {
-    await fetch(`/api/stop/${currentJobId}`, { method: 'POST' });
-    addLog('info', 'Se oprește...');
-    document.getElementById('stopBtn').disabled = true;
-    document.getElementById('stopBtn').textContent = 'Se oprește...';
-  } catch (err) {
-    console.error('Stop failed:', err);
-  }
-}
-
-// ─── SSE Events ─────────────────────────────────────────────────────
-function listenToEvents(jobId) {
-  if (eventSource) eventSource.close();
-  eventSource = new EventSource(`/api/stream/${jobId}`);
-  eventSource.onmessage = (event) => handleEvent(JSON.parse(event.data));
-  eventSource.onerror = () => { eventSource.close(); resetBtn(); };
-}
-
-function handleEvent(msg) {
-  const { event, data } = msg;
-
-  switch (event) {
-    case 'job_start':
-      stats.total = data.total_products;
-      document.getElementById('statTotal').textContent = stats.total;
-      addLog('info', `Job pornit: ${stats.total} produse`);
-      break;
-
-    case 'product_start':
-      document.getElementById('currentProduct').classList.add('active');
-      document.getElementById('currentName').textContent = data.denumire;
-      document.getElementById('currentDetail').textContent =
-        `Searching... (${data.index + 1}/${data.total})`;
-      break;
-
-    case 'search_phase':
-      if (data.phase === 'priority') {
-        document.getElementById('currentDetail').textContent =
-          `Searching ${data.site}... (priority)`;
-        addLog('info', `&#128269; Priority: site:${data.site}`);
-      } else {
-        document.getElementById('currentDetail').textContent = 'Căutare generală...';
-        addLog('info', `&#128269; General search`);
-      }
-      break;
-
-    case 'status':
-      addLog('info', data.message || '');
-      break;
-
-    case 'candidate_checked': {
-      const icon = data.passed ? '&#10003;' : '&#10007;';
-      const cls = data.passed ? 'pass' : 'fail';
-      const relLabel = data.relevance_score != null ? ` | Relevance: ${data.relevance_score}` : '';
-      addLog(cls, `${icon} Quality: ${data.quality_score}${relLabel} ${data.reasons.length ? '- ' + data.reasons.join(', ') : '- OK'}`);
-      break;
-    }
-
-    case 'product_done':
-      stats.done++;
-      if (data.status === 'ok') stats.success++;
-      else stats.failed++;
-      stats.images += (data.images || []).length;
-      updateStats();
-      addResultCard(data);
-      addLog(data.status === 'ok' ? 'pass' : 'fail',
-        `${data.denumire}: ${data.images?.length || 0} images (${data.source})`);
-      break;
-
-    case 'job_done': {
-      document.getElementById('currentProduct').classList.remove('active');
-      const duration = timerStart ? formatDuration(Date.now() - timerStart) : '';
-      const avgTime = (timerStart && stats.total > 0)
-        ? (((Date.now() - timerStart) / 1000) / stats.total).toFixed(1) + 's/product' : '';
-      document.getElementById('progressLabel').textContent =
-        `Finalizat! ${duration}` + (avgTime ? ` (${avgTime})` : '');
-      addLog('info', `Gata! ${data.stats?.images_saved || 0} imagini salvate în ${duration}. ${avgTime}`);
-      resetBtn();
-      document.getElementById('resetBtn').disabled = false;
-      if (eventSource) eventSource.close();
-      break;
-    }
-
-    case 'heartbeat':
-      break;
-  }
-}
-
-// ─── UI Updates ─────────────────────────────────────────────────────
-function updateStats() {
-  document.getElementById('statTotal').textContent = stats.total;
-  document.getElementById('statDone').textContent = stats.done;
-  document.getElementById('statSuccess').textContent = stats.success;
-  document.getElementById('statFailed').textContent = stats.failed;
-
-  const pct = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
-  document.getElementById('progressBar').style.width = pct + '%';
-  document.getElementById('progressPercent').textContent = pct + '%';
-  document.getElementById('progressLabel').textContent =
-    `${stats.done}/${stats.total} procesate (${stats.images} imagini)`;
-}
-
-function addLog(cls, html) {
-  const container = document.getElementById('logContainer');
-  const now = new Date().toLocaleTimeString('ro-RO', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
-  });
-  container.innerHTML += `<div class="log-entry ${cls}"><span class="time">${now}</span>${html}</div>`;
-  container.scrollTop = container.scrollHeight;
-}
-
-function addResultCard(data) {
-  document.getElementById('resultsSection').classList.add('active');
-  const grid = document.getElementById('resultsGrid');
-
-  let imagesHtml = '';
-  if (data.images && data.images.length > 0) {
-    data.images.forEach(img => {
-      if (img.thumbnail) {
-        const imgUrl = img.image_url || '';
-        imagesHtml += `<img class="result-img" src="data:image/jpeg;base64,${img.thumbnail}" title="Score: ${img.quality_score}" onclick="openLightbox('${imgUrl.replace(/'/g, "\\'")}')" style="cursor:zoom-in">`;
-      }
-    });
-  } else {
-    imagesHtml = '<div class="no-images-placeholder">Nicio imagine găsită</div>';
-  }
-
-  const statusCls = data.status === 'ok' ? 'ok' : 'failed';
-  const statusText = data.status === 'ok' ? `${data.images.length} img` : 'Failed';
-
-  grid.innerHTML += `
-    <div class="result-card">
-      <div class="result-header">
-        <div class="result-name">${escapeHtml(data.denumire)}</div>
-        <div class="result-status ${statusCls}">${statusText}</div>
-      </div>
-      <div class="result-images">${imagesHtml}</div>
-      <div class="result-meta">
-        ${data.images?.[0]?.image_domain ? `<span class="badge">${data.images[0].image_domain}</span>` : `<span class="badge">${data.source || '-'}</span>`}
-        ${data.images?.[0]?.quality_score ? `<span class="badge">Q:${data.images[0].quality_score}</span>` : ''}
-        ${data.images?.[0]?.relevance_score != null ? `<span class="badge">R:${data.images[0].relevance_score}</span>` : ''}
-      </div>
-    </div>`;
-}
-
-function escapeHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-// ─── Lightbox ────────────────────────────────────────────────────────
-function openLightbox(url) {
-  if (!url) return;
-  let overlay = document.getElementById('lightboxOverlay');
-  if (!overlay) {
-    overlay = document.createElement('div');
-    overlay.id = 'lightboxOverlay';
-    overlay.innerHTML = '<img id="lightboxImg" src="">';
-    overlay.addEventListener('click', () => overlay.style.display = 'none');
-    document.body.appendChild(overlay);
-  }
-  document.getElementById('lightboxImg').src = url;
-  overlay.style.display = 'flex';
-}
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    const o = document.getElementById('lightboxOverlay');
-    if (o) o.style.display = 'none';
-  }
-});
-
 // ─── Reset All ──────────────────────────────────────────────────────
+
 function resetAll() {
-  // Clear inputs
   clearInput();
   document.getElementById('prioritySites').value = '';
   updateSiteCount();
-
-  // Reset config to High Quality defaults
   applyPreset('quality');
-
-  // Min resolution OFF by default (user can enable it)
   document.getElementById('useMinResolution').checked = false;
   toggleMinRes();
-
-  // Reset other fields
   document.getElementById('searchSuffix').value = 'product photo';
   document.getElementById('outputFormat').value = 'jpeg';
   document.getElementById('quality').value = 98;
@@ -462,64 +203,18 @@ function resetAll() {
   document.getElementById('minAspectVal').textContent = '0.4';
   document.getElementById('maxAspectRatio').value = 2.5;
   document.getElementById('maxAspectVal').textContent = '2.5';
-
-  // Hide progress and results
   document.getElementById('progressSection').classList.remove('active');
   document.getElementById('resultsSection').classList.remove('active');
   document.getElementById('resultsGrid').innerHTML = '';
   document.getElementById('logContainer').innerHTML = '';
   document.getElementById('timerDisplay').textContent = '00:00';
   timerStart = null;
-
-  // Switch to text tab
+  pendingImages = {};
+  approvalDone = false;
+  hideApprovalToolbar();
   switchTab('text');
-
-  // Disable reset again (nothing to reset)
   document.getElementById('resetBtn').disabled = true;
 }
-
-// ─── Font Size (zoom-based) ─────────────────────────────────────────
-const ZOOM_LEVELS = [0.8, 0.9, 1, 1.1, 1.25, 1.4];
-let currentZoomIndex = 2; // default 1 (100%)
-
-function changeFontSize(direction) {
-  currentZoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, currentZoomIndex + direction));
-  applyZoom();
-  localStorage.setItem('zoomLevel', currentZoomIndex);
-}
-
-function applyZoom() {
-  document.documentElement.style.zoom = ZOOM_LEVELS[currentZoomIndex];
-}
-
-(function initFontSize() {
-  const saved = localStorage.getItem('zoomLevel');
-  if (saved !== null) {
-    currentZoomIndex = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, +saved));
-    applyZoom();
-  }
-})();
-
-// ─── Theme ──────────────────────────────────────────────────────────
-function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme');
-  const next = current === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('theme', next);
-  updateThemeIcon(next);
-}
-
-function updateThemeIcon(theme) {
-  document.getElementById('themeIconLight').style.display = theme === 'light' ? 'block' : 'none';
-  document.getElementById('themeIconDark').style.display = theme === 'dark' ? 'block' : 'none';
-  if (typeof lucide !== 'undefined') lucide.createIcons();
-}
-
-(function() {
-  const saved = localStorage.getItem('theme') || 'dark';
-  if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
-  updateThemeIcon(saved);
-})();
 
 // ─── Init ───────────────────────────────────────────────────────────
 updateLineCount();

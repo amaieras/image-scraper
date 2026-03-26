@@ -132,7 +132,12 @@ image-scraper/
 ├── index.html          # Frontend HTML (layout only)
 ├── static/
 │   ├── style.css       # All CSS styles
-│   └── app.js          # All JavaScript logic
+│   ├── state.js        # Shared global state and utilities
+│   ├── ui.js           # Stats display, logging, lightbox, theme
+│   ├── approval.js     # Image selection (radio behavior), approval workflow
+│   ├── replace.js      # Replace image via URL download
+│   ├── scraper.js      # Start/stop scraping, SSE events, result cards
+│   └── app.js          # Config, presets, input handling, tabs, init
 ├── scraper.py          # CLI scraper original (standalone, fără UI)
 ├── deploy-osx.sh       # Deploy macOS (auto-install Homebrew + Python)
 ├── deploy-linux.sh     # Deploy Linux (auto-install Python, suport multi-distro)

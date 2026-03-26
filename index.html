@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Image Scraper - Hermes B2B</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=10">
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
@@ -113,6 +113,16 @@
         </div>
       </div>
     </div>
+
+<!-- Approval Toolbar (floating bottom bar) -->
+<div id="approvalToolbar" class="approval-toolbar">
+  <div id="approvalActions" class="approval-actions">
+    <button class="btn btn-sm btn-ghost" onclick="selectAllImages()">Selectează tot</button>
+    <button class="btn btn-sm btn-ghost" onclick="deselectAllImages()">Deselectează tot</button>
+  </div>
+  <span id="approvalCount" class="approval-count">0 / 0 selectate</span>
+  <button id="approveBtn" class="btn btn-approve" onclick="approveSelected()">Aprobă Selecția</button>
+</div>
 
     <!-- RIGHT COLUMN - Config -->
     <div class="right-col">
@@ -306,7 +316,12 @@
   </div>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/state.js?v=10"></script>
+<script src="/static/ui.js?v=10"></script>
+<script src="/static/approval.js?v=10"></script>
+<script src="/static/replace.js?v=10"></script>
+<script src="/static/scraper.js?v=10"></script>
+<script src="/static/app.js?v=10"></script>
 <script>lucide.createIcons();</script>
 <script>
 // Load saved config (Gemini key) on page load

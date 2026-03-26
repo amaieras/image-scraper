@@ -18,6 +18,7 @@ import logging
 import os
 import queue
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -34,6 +35,7 @@ from PIL import Image, ImageOps, ImageFilter
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # No caching for static files in dev
 logger = logging.getLogger("scraper-ui")
 logging.basicConfig(level=logging.INFO)
 
@@ -4435,6 +4437,18 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                 "relevance_score": relevance_score,
             })
 
+            # Minimum relevance threshold — reject clearly wrong images
+            MIN_RELEVANCE = 40
+            if relevance_score is not None and relevance_score < MIN_RELEVANCE:
+                send("candidate_checked", {
+                    "index": idx, "url": url[:100],
+                    "quality_score": qc["score"], "passed": False,
+                    "reasons": [f"Relevance too low ({relevance_score} < {MIN_RELEVANCE})"],
+                    "relevance_score": relevance_score,
+                })
+                print(f"[FILTER] Rejected {url[:80]} — relevance {relevance_score} < {MIN_RELEVANCE}")
+                continue
+
             valid_candidates.append((data, qc, relevance_score, url, img_hash, src))
 
             # EARLY STOP: only if we have enough great matches for ALL requested images
@@ -4509,7 +4523,10 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                 img_num = len(saved_images) + 1
                 filename = hermes_filename(product_id, denumire, img_num,
                                            fmt=output_format)
-                filepath = output_dir / filename
+                # Save to _pending subdirectory (user must approve before final save)
+                pending_dir = output_dir / "_pending"
+                pending_dir.mkdir(exist_ok=True)
+                filepath = pending_dir / filename
                 filepath.write_bytes(processed)
 
                 thumb = make_thumbnail(processed)
@@ -4877,9 +4894,179 @@ def stream_events(job_id):
 
 @app.route("/api/images/<job_id>/<filename>")
 def serve_image(job_id, filename):
-    """Serve a downloaded image."""
+    """Serve a downloaded image (from _pending or final dir)."""
+    pending_dir = OUTPUT_DIR / job_id / "_pending"
+    if (pending_dir / filename).exists():
+        return send_from_directory(str(pending_dir), filename)
     img_dir = OUTPUT_DIR / job_id
     return send_from_directory(str(img_dir), filename)
+
+
+@app.route("/api/approve", methods=["POST"])
+def approve_images():
+    """
+    Approve selected images: move from _pending/ to output dir.
+    Rejected images are deleted from _pending/.
+    Body: { "job_id": "...", "approved": ["file1.jpg", "file2.jpg"] }
+    """
+    data = request.get_json()
+    job_id = data.get("job_id", "")
+    approved_files = set(data.get("approved", []))
+
+    if not job_id:
+        return jsonify({"error": "Missing job_id"}), 400
+
+    output_dir = OUTPUT_DIR / job_id
+    pending_dir = output_dir / "_pending"
+
+    moved = []
+    deleted = []
+
+    # Process pending files (not yet approved)
+    if pending_dir.exists():
+        for f in pending_dir.iterdir():
+            if not f.is_file():
+                continue
+            if f.name in approved_files:
+                dest = output_dir / f.name
+                shutil.move(str(f), str(dest))
+                moved.append(f.name)
+            else:
+                f.unlink()
+                deleted.append(f.name)
+
+    # Also count already-approved files that are still selected
+    # (from previous approve rounds — they're already in output_dir)
+    for fname in approved_files:
+        if fname not in moved and (output_dir / fname).exists():
+            moved.append(fname)
+
+    # Clean up empty _pending directory
+    try:
+        pending_dir.rmdir()
+    except OSError:
+        pass
+
+    return jsonify({
+        "ok": True,
+        "moved": len(moved),
+        "deleted": len(deleted),
+        "files": moved,
+    })
+
+
+@app.route("/api/replace", methods=["POST"])
+def replace_image():
+    """
+    Replace/add an image for a product. Two modes:
+    1. Direct URL: download the image from a given URL
+    2. Site search: search a specific site for the product
+    Body: {
+      "job_id": "...",
+      "product_id": "...",
+      "denumire": "...",
+      "image_url": "https://...",      // mode 1: direct URL
+      "search_site": "finestore.ro",   // mode 2: search a site
+      "old_filename": "...",           // optional: filename to replace
+    }
+    Returns: { ok, image: { filename, thumbnail, image_url } }
+    """
+    data = request.get_json()
+    job_id = data.get("job_id", "")
+    product_id = data.get("product_id", "")
+    denumire = data.get("denumire", "")
+    image_url = data.get("image_url", "").strip()
+    search_site = data.get("search_site", "").strip()
+    old_filename = data.get("old_filename", "").strip()
+
+    if not job_id or not product_id:
+        return jsonify({"error": "Missing job_id or product_id"}), 400
+
+    output_dir = OUTPUT_DIR / job_id
+    pending_dir = output_dir / "_pending"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get config from the job if available
+    job = active_jobs.get(job_id, {})
+    config = job.get("config", {})
+    target_size = (config.get("image_width", 200), config.get("image_height", 200))
+    quality = config.get("quality", 95)
+    output_format = config.get("output_format", "jpeg")
+    remove_bg = config.get("remove_background", False)
+
+    img_data = None
+    source_url = ""
+
+    if image_url:
+        # Mode 1: Direct URL download
+        img_data = download_image(image_url)
+        source_url = image_url
+        if not img_data:
+            return jsonify({"error": f"Nu am putut descărca imaginea de la: {image_url[:100]}"}), 400
+
+    elif search_site:
+        # Mode 2: Search on a specific site
+        search_site = search_site.replace("https://", "").replace("http://", "").strip("/")
+        ai_matcher = AIProductMatcher(config.get("anthropic_key", ""))
+        scraper = DirectSiteScraper(ai_matcher=ai_matcher)
+        cleaned = clean_product_query(denumire)
+        results = scraper.search(search_site, cleaned, max_results=3, product_name=denumire)
+        if not results:
+            # Try with full name
+            results = scraper.search(search_site, denumire, max_results=3, product_name=denumire)
+        if not results:
+            return jsonify({"error": f"Nu am găsit nimic pe {search_site} pentru '{denumire}'"}), 404
+
+        # Download the best result
+        for r in results:
+            img_url = r.get("image", "")
+            if img_url:
+                img_data = download_image(img_url)
+                if img_data:
+                    source_url = img_url
+                    break
+        if not img_data:
+            return jsonify({"error": f"Am găsit rezultate pe {search_site} dar nu am putut descărca imaginile"}), 400
+
+    else:
+        return jsonify({"error": "Specifică un URL de imagine sau un site de căutare"}), 400
+
+    try:
+        processed = resize_and_pad(img_data, target_size, quality=quality,
+                                    remove_bg=remove_bg, output_format=output_format)
+
+        # Delete old file if replacing
+        if old_filename:
+            old_path = pending_dir / old_filename
+            if old_path.exists():
+                old_path.unlink()
+            # Also check in output_dir
+            old_path2 = output_dir / old_filename
+            if old_path2.exists():
+                old_path2.unlink()
+
+        # Generate new filename — count existing files for this product
+        # Filename format: product_id}{comment}#number.ext — so glob with }{ separator
+        glob_pattern = str(product_id) + "}{*"
+        existing = list(pending_dir.glob(glob_pattern)) + list(output_dir.glob(glob_pattern))
+        img_num = len(existing) + 1
+        filename = hermes_filename(product_id, denumire, img_num, fmt=output_format)
+        filepath = pending_dir / filename
+        filepath.write_bytes(processed)
+
+        thumb = make_thumbnail(processed)
+
+        return jsonify({
+            "ok": True,
+            "image": {
+                "filename": filename,
+                "thumbnail": thumb,
+                "image_url": source_url,
+            }
+        })
+    except Exception as e:
+        logger.error(f"Replace image error: {e}")
+        return jsonify({"error": f"Eroare la procesarea imaginii: {str(e)}"}), 500
 
 
 @app.route("/api/jobs")
