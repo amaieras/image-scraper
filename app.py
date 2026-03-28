@@ -449,12 +449,240 @@ class RelevanceChecker:
                 "relevant": relevant,
                 "reason": reason,
                 "multi_product": multi_product,
+                "_image_features": image_features,  # cached for type_check reuse
             }
         except Exception as e:
             logger.warning(f"CLIP check error for '{product_name[:30]}': {type(e).__name__}: {e}")
             import traceback
             logger.warning(traceback.format_exc())
             return {"score": 50, "similarity": 0.0, "relevant": True, "reason": f"Error: {e}"}
+
+    def type_check(self, image_features, product_name: str) -> dict:
+        """
+        CLIP comparative type disambiguation.
+        If product name contains a type keyword (pireu, sirop, ceai, cafea, etc.),
+        compare the image against ALL type variants to see which one matches best.
+        Returns {ok: bool, expected_type: str, best_match: str, scores: dict}
+
+        Example: product "Pireu MONIN Banane" → compare image against:
+          - "Monin banana fruit puree bottle"
+          - "Monin banana syrup bottle"
+          - "Monin banana sauce bottle"
+        If "syrup" scores higher than "puree", the image is wrong.
+        """
+        if not self.available or image_features is None:
+            return {"ok": True, "reason": "CLIP not available for type check"}
+
+        # Product type groups with EN translations for CLIP
+        _type_map = {
+            "pireu":    {"en": "fruit puree", "group": "puree"},
+            "piure":    {"en": "fruit puree", "group": "puree"},
+            "puree":    {"en": "fruit puree", "group": "puree"},
+            "sirop":    {"en": "syrup", "group": "syrup"},
+            "syrup":    {"en": "syrup", "group": "syrup"},
+            "ceai":     {"en": "tea", "group": "tea"},
+            "tea":      {"en": "tea", "group": "tea"},
+            "infuzie":  {"en": "herbal tea infusion", "group": "tea"},
+            "cafea":    {"en": "coffee", "group": "coffee"},
+            "coffee":   {"en": "coffee", "group": "coffee"},
+            "sos":      {"en": "sauce", "group": "sauce"},
+            "sauce":    {"en": "sauce", "group": "sauce"},
+            "gem":      {"en": "jam", "group": "jam"},
+            "dulceata": {"en": "jam", "group": "jam"},
+            "suc":      {"en": "juice", "group": "juice"},
+            "juice":    {"en": "juice", "group": "juice"},
+        }
+
+        # Find which type the product name contains
+        name_lower = product_name.lower()
+        name_words = set(re.findall(r'[a-z]+', name_lower))
+        expected_type = None
+        expected_group = None
+        for word in name_words:
+            if word in _type_map:
+                expected_type = _type_map[word]["en"]
+                expected_group = _type_map[word]["group"]
+                break
+
+        if not expected_type:
+            return {"ok": True, "reason": "No product type keyword found"}
+
+        # Build comparison prompts — extract brand+flavor from name
+        # Remove type words, size words, generic words to get the "identity"
+        _remove = {"pireu", "piure", "puree", "sirop", "syrup", "ceai", "tea",
+                    "cafea", "coffee", "sos", "sauce", "gem", "dulceata", "suc", "juice",
+                    "infuzie", "infusion", "de", "cu", "si", "din", "la",
+                    "new", "nou", "buc", "plic", "cut", "pachet"}
+        identity_words = [w for w in re.findall(r'[a-zA-Z0-9]+', product_name)
+                          if w.lower() not in _remove and len(w) > 1]
+        # Also remove size patterns like "1L", "500ml", "4gr", "20plic"
+        identity_words = [w for w in identity_words if not re.match(r'^\d+\w*$', w)]
+        identity = " ".join(identity_words) if identity_words else product_name
+
+        # Get all unique groups to compare against
+        all_groups = {}
+        for info in _type_map.values():
+            g = info["group"]
+            if g not in all_groups:
+                all_groups[g] = info["en"]
+
+        # Build CLIP prompts for each type variant
+        try:
+            torch = self.torch
+            prompts = []
+            groups_order = []
+            for group, en_type in all_groups.items():
+                prompts.append(f"a bottle of {identity} {en_type}")
+                prompts.append(f"{identity} {en_type} product photo")
+                groups_order.extend([group, group])
+
+            text_input = self.tokenizer(prompts)
+            with torch.no_grad():
+                text_features = self.model.encode_text(text_input)
+                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                similarities = (image_features @ text_features.T).squeeze()
+
+            # Average scores per group
+            group_scores = {}
+            for i, group in enumerate(groups_order):
+                sim = similarities[i].item() if similarities.dim() > 0 else similarities.item()
+                if group not in group_scores:
+                    group_scores[group] = []
+                group_scores[group].append(sim)
+            group_avg = {g: sum(s) / len(s) for g, s in group_scores.items()}
+
+            best_group = max(group_avg, key=group_avg.get)
+            expected_score = group_avg.get(expected_group, 0)
+            best_score = group_avg[best_group]
+
+            logger.info(f"CLIP type check for '{product_name[:40]}': "
+                        f"expected={expected_group}({expected_score:.3f}) "
+                        f"best={best_group}({best_score:.3f}) "
+                        f"all={{{', '.join(f'{g}:{s:.3f}' for g, s in sorted(group_avg.items(), key=lambda x: -x[1]))}}}")
+
+            # Conflict: best match is a DIFFERENT type AND significantly higher
+            # Threshold 0.03: CLIP scores for similar bottle products (puree vs syrup vs coffee)
+            # are often very close (within 0.01-0.02), so a tight threshold causes false rejections
+            if best_group != expected_group and best_score > expected_score + 0.03:
+                return {
+                    "ok": False,
+                    "expected_type": expected_group,
+                    "best_match": best_group,
+                    "expected_score": round(expected_score, 3),
+                    "best_score": round(best_score, 3),
+                    "scores": {g: round(s, 3) for g, s in group_avg.items()},
+                    "reason": f"Image looks more like {best_group} ({best_score:.3f}) than {expected_group} ({expected_score:.3f})",
+                }
+            return {
+                "ok": True,
+                "expected_type": expected_group,
+                "best_match": best_group,
+                "scores": {g: round(s, 3) for g, s in group_avg.items()},
+                "reason": "Type matches",
+            }
+        except Exception as e:
+            logger.warning(f"CLIP type check error: {e}")
+            return {"ok": True, "reason": f"Type check error: {e}"}
+
+    def packaging_check(self, image_features, product_name: str) -> dict:
+        """
+        CLIP check: does the image show a PACKAGED product or loose/raw material?
+        If the product name indicates packaging (plic, cutie, pachet, sticla, etc.),
+        reject images showing raw/loose products (tea leaves in bowl, coffee beans pile, etc.)
+        """
+        if not self.available or image_features is None:
+            return {"ok": True, "reason": "CLIP not available for packaging check"}
+
+        name_lower = product_name.lower()
+
+        # Detect if product name implies packaging
+        _packaging_indicators = {
+            "plic", "plicuri", "pliculete", "cut", "cutie", "cutii",
+            "pachet", "pachete", "sticla", "flacon", "borcan",
+            "doza", "doze", "capsule", "capsula", "tableta", "tablete",
+            "punga", "pungi", "ambalaj", "bidon", "pet",
+        }
+        has_packaging = any(ind in name_lower for ind in _packaging_indicators)
+
+        # Also check for size patterns that imply a specific product (1L, 500ml, 250g, 1kg)
+        if re.search(r'\d+\s*(ml|l|g|kg|cl)\b', name_lower):
+            has_packaging = True
+
+        if not has_packaging:
+            return {"ok": True, "reason": "No packaging indicator in name"}
+
+        # Determine product category for targeted prompts
+        is_tea = any(w in name_lower for w in ["ceai", "tea", "infuzie", "chai"])
+        is_coffee = any(w in name_lower for w in ["cafea", "coffee"])
+        is_spice = any(w in name_lower for w in ["condiment", "mirodenie", "spice"])
+
+        try:
+            torch = self.torch
+
+            # Build comparison prompts
+            packaged_prompts = [
+                "a product in retail packaging box",
+                "a sealed commercial product package",
+                "branded product in original packaging",
+            ]
+            loose_prompts = [
+                "loose raw ingredients in a bowl",
+                "bulk material without packaging",
+                "raw food ingredients scattered on surface",
+            ]
+
+            if is_tea:
+                packaged_prompts.extend([
+                    "a box of tea bags commercial product",
+                    "tea product in sealed retail packaging",
+                ])
+                loose_prompts.extend([
+                    "loose tea leaves in a bowl or cup",
+                    "dried herbs and tea leaves pile",
+                ])
+            elif is_coffee:
+                packaged_prompts.extend([
+                    "a bag of coffee product sealed",
+                    "coffee product in commercial packaging",
+                ])
+                loose_prompts.extend([
+                    "loose coffee beans on a table",
+                    "ground coffee powder pile",
+                ])
+
+            packaged_input = self.tokenizer(packaged_prompts)
+            loose_input = self.tokenizer(loose_prompts)
+
+            with torch.no_grad():
+                pack_feat = self.model.encode_text(packaged_input)
+                loose_feat = self.model.encode_text(loose_input)
+                pack_feat = pack_feat / pack_feat.norm(dim=-1, keepdim=True)
+                loose_feat = loose_feat / loose_feat.norm(dim=-1, keepdim=True)
+
+                pack_sim = (image_features @ pack_feat.T).squeeze().max().item()
+                loose_sim = (image_features @ loose_feat.T).squeeze().max().item()
+
+            logger.info(f"CLIP packaging check for '{product_name[:40]}': "
+                        f"packaged={pack_sim:.3f} loose={loose_sim:.3f}")
+
+            # Reject if loose scores significantly higher than packaged
+            if loose_sim > pack_sim + 0.02:
+                return {
+                    "ok": False,
+                    "packaged_score": round(pack_sim, 3),
+                    "loose_score": round(loose_sim, 3),
+                    "reason": f"Image shows loose/raw product ({loose_sim:.3f}) not packaged ({pack_sim:.3f})",
+                }
+
+            return {
+                "ok": True,
+                "packaged_score": round(pack_sim, 3),
+                "loose_score": round(loose_sim, 3),
+                "reason": "Packaging OK",
+            }
+        except Exception as e:
+            logger.warning(f"CLIP packaging check error: {e}")
+            return {"ok": True, "reason": f"Packaging check error: {e}"}
 
 
 # Global instance (lazy loaded)
@@ -723,16 +951,33 @@ class BingImageScraper:
             return []
 
         results = []
-        urls = re.findall(r'murl&quot;:&quot;(https?://[^&]+?)&quot;', resp.text)
+        # Extract image URLs and page URLs from Bing's JSON-like metadata
+        # Bing embeds metadata like: murl:"imageurl" purl:"pageurl" desc:"title"
+        image_metas = re.findall(
+            r'murl&quot;:&quot;(https?://[^&]+?)&quot;'
+            r'(?:.*?purl&quot;:&quot;(https?://[^&]+?)&quot;)?'
+            r'(?:.*?desc_t&quot;:&quot;([^&]*?)&quot;)?',
+            resp.text
+        )
+        # Fallback: if regex above doesn't match, use simple URL extraction
+        if not image_metas:
+            simple_urls = re.findall(r'murl&quot;:&quot;(https?://[^&]+?)&quot;', resp.text)
+            image_metas = [(u, "", "") for u in simple_urls]
 
-        for url in urls[:max_results * 2]:
+        for meta in image_metas[:max_results * 2]:
             if len(results) >= max_results:
                 break
+            url = meta[0]
+            page_url = meta[1] if len(meta) > 1 else ""
+            title = meta[2] if len(meta) > 2 else query
             if any(skip in url.lower() for skip in [
                 'favicon', 'logo', '1x1', 'pixel', '.svg', '.gif', 'placeholder'
             ]):
                 continue
-            results.append({"image": url, "title": query, "source": "bing"})
+            result = {"image": url, "title": title or query, "source": "bing"}
+            if page_url:
+                result["url"] = page_url
+            results.append(result)
 
         return results
 
@@ -1607,18 +1852,24 @@ class DirectSiteScraper:
                 logger.debug(f"Direct scrape error for {site}: {e}")
                 continue
 
-        # === EARLY STOP: if search patterns found products but ALL were wrong type/conflicting,
-        # skip slug + brand page + Google site:search (they're unlikely to find better results) ===
-        if not results and _site_had_results_but_all_wrong:
-            print(f"[SEARCH] EARLY STOP: {domain} had results but all conflicted, skipping slug/brand/google phases")
-            return results
-
-        # If no results, try constructing a product URL from the full product name (most precise)
+        # If search found products but ALL were wrong type/conflicting, still try SLUG phase
+        # but with reduced slug count to avoid delays (site might not carry this product at all)
         if not results:
-            # Use product_name (full name with type words like Pireu/Sirop) for better slug matching
             slug_query = product_name or query
-            slug_results = self._try_slug_url(base_url, slug_query, max_results)
+            if _site_had_results_but_all_wrong:
+                # Reduced slug phase: only top 8 slugs (not 30) since site search suggests
+                # this product might not exist here — but slug could still find it
+                # (e.g. king.ro search returns syrups but slug finds piure page)
+                slug_results = self._try_slug_url(base_url, slug_query, max_results, max_slugs=8)
+                print(f"[SEARCH] Reduced slug phase for {domain} (all search results conflicted)")
+            else:
+                slug_results = self._try_slug_url(base_url, slug_query, max_results)
             results.extend(slug_results)
+
+        # If search found results but ALL conflicted, skip brand page + Google (unlikely to help)
+        if _site_had_results_but_all_wrong and not results:
+            print(f"[SEARCH] SKIP brand/google phases: {domain} had results but all conflicted (slug also failed)")
+            return results
 
         # If still no results, try brand page crawling (broader, less precise)
         if not results:
@@ -1908,7 +2159,7 @@ class DirectSiteScraper:
 
         return results
 
-    def _try_slug_url(self, base_url: str, query: str, max_results: int = 5) -> list[dict]:
+    def _try_slug_url(self, base_url: str, query: str, max_results: int = 5, max_slugs: int = 30) -> list[dict]:
         """
         Try to construct a product URL by slugifying the query.
         Many e-commerce sites use URL slugs like /product-name-here or
@@ -1929,11 +2180,21 @@ class DirectSiteScraper:
                 vol_unit = "g"
             volume_suffix = f"{vol_num}{vol_unit}".replace(".0", "")
 
-        # Clean the query: remove weights, packaging noise, parenthetical hints
+        # Extract parenthetical content BEFORE cleaning — used as alternate flavor names for slugs
+        # "(Red Berries)" → "Red Berries", "(mere verzi)" → "mere verzi"
+        _paren_contents = re.findall(r'\(([^)]+)\)', query)
+        _paren_alt_flavors = []
+        for pc in _paren_contents:
+            pc = pc.strip()
+            # Skip packaging patterns
+            if re.match(r'^\d+', pc):
+                continue
+            _paren_alt_flavors.append(pc)
+
+        # Clean the query: remove weights, packaging noise
+        # NOTE: clean_product_query preserves RO flavor words from parens, removes EN translations
         cleaned = clean_product_query(query)
-        # Remove parenthetical content like "(mere verzi)" — it's a hint, not part of the slug
-        cleaned = re.sub(r'\([^)]*\)', '', cleaned).strip()
-        cleaned = re.sub(r'\s+', ' ', cleaned)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
         def _ro_word_forms(word: str) -> set[str]:
             """Generate common Romanian morphological variants of a word.
@@ -2045,6 +2306,16 @@ class DirectSiteScraper:
         for fw in flavor_words:
             f_forms = _top_forms(fw[0], fw[1], limit=4)
 
+        # Variant 2b FIRST: brand-type (e.g. MONIN Green Apple + piure → monin-green-apple-piure)
+        # This is the MOST COMMON e-commerce URL pattern, so try it first.
+        # ALWAYS generate this, even when flavor_words exist — because parenthetical translations
+        # like "(mere verzi)" add flavor_words but the URL slug uses the brand identity (English)
+        if brand_words and t_forms:
+            for tf in t_forms:
+                s = make_slug(f"{brand_str} {tf}")
+                if s and s not in slugs:
+                    slugs.append(s)
+
         # Variant 1: brand-flavor-type (monin-mandarina-piure)
         if brand_words and f_forms and t_forms:
             for ff in f_forms:
@@ -2060,12 +2331,11 @@ class DirectSiteScraper:
                 if s and s not in slugs:
                     slugs.append(s)
 
-        # Variant 2b: brand-type (when flavor is in brand_words, e.g. MONIN Green Apple + piure)
-        if brand_words and t_forms and not f_forms:
-            for tf in t_forms:
-                s = make_slug(f"{brand_str} {tf}")
-                if s and s not in slugs:
-                    slugs.append(s)
+        # Variant 2c: brand-only (monin-green-apple) — sometimes sites omit the type
+        if brand_words and len(brand_words) >= 2:
+            s = make_slug(brand_str)
+            if s and s not in slugs:
+                slugs.append(s)
 
         # Variant 3: type-brand-flavor (piure-monin-mandarina)
         if brand_words and t_forms:
@@ -2271,8 +2541,38 @@ class DirectSiteScraper:
         # They target specific site conventions so should be tried early
         slugs = slugs[:20] + [s for s in alias_slugs if s not in slugs] + slugs[20:]
 
+        # Variant 11: Alternate flavor names from parentheses
+        # e.g. "(Red Berries)" → try brand + "red berries" + type slugs
+        # This handles cases where the URL uses the English name from parentheses
+        # like king.ro/monin-red-berries-piure.html for "MONIN Fructe de Padure (Red Berries)"
+        if _paren_alt_flavors and brand_words:
+            paren_slugs = []
+            for alt_flavor in _paren_alt_flavors:
+                alt_slug = make_slug(alt_flavor)
+                if not alt_slug or len(alt_slug) < 3:
+                    continue
+                # brand + alt_flavor + type (most specific)
+                if t_forms:
+                    for tf in t_forms[:3]:
+                        s = make_slug(f"{brand_str} {alt_flavor} {tf}")
+                        if s and s not in slugs and s not in paren_slugs:
+                            paren_slugs.append(s)
+                # brand + alt_flavor (without type)
+                s = make_slug(f"{brand_str} {alt_flavor}")
+                if s and s not in slugs and s not in paren_slugs:
+                    paren_slugs.append(s)
+                # With volume
+                if volume_suffix and t_forms:
+                    s = make_slug(f"{brand_str} {alt_flavor} {t_forms[0]} {volume_suffix}")
+                    if s and s not in slugs and s not in paren_slugs:
+                        paren_slugs.append(s)
+            # Insert near the front — these are high-value since they're explicit alternate names
+            slugs = paren_slugs + slugs
+            print(f"[SLUG] Added {len(paren_slugs)} paren-flavor slugs: {paren_slugs[:5]}")
+
         # Limit total slugs to avoid too many HTTP requests
-        slugs = slugs[:30]
+        slugs = slugs[:max_slugs]
+        print(f"[SLUG] {site}: trying {len(slugs)} slugs (max_slugs={max_slugs}): {slugs[:5]}")
 
         # URL suffixes to try (no prefix — product slugs are almost always at root)
         suffixes = ["", ".html"]  # CS-Cart, Magento often use .html
@@ -3227,11 +3527,12 @@ def url_keyword_score(url: str, product_name: str) -> float:
     words = product_name.lower().split()
     # Skip short words, generic RO/EN words, and common filler
     _skip_url_words = {
-        "the", "and", "for", "con", "per", "din", "cafea", "produs",
-        "ceai", "infuzie", "sirop", "piure", "pireu", "aroma",
-        "new", "buc", "plic", "cut", "pachet", "cutie", "set",
+        "the", "and", "for", "con", "per", "din", "produs",
+        "aroma", "new", "buc", "plic", "cut", "pachet", "cutie", "set",
         "mic", "mare", "de", "cu",
     }
+    # NOTE: product type words (sirop, pireu, cafea, ceai etc.) are NOT skipped —
+    # they are important for distinguishing e.g. "Pireu MONIN Banana" from "Sirop MONIN Banana"
     keywords = [w for w in words if len(w) >= 3 and w not in _skip_url_words]
 
     if not keywords:
@@ -3292,6 +3593,11 @@ def url_has_conflicting_product(url: str, product_name: str) -> bool:
             if url_has_other_type and not url_has_correct_type:
                 print(f"[CONFLICT] Type mismatch: name type={name_type_group & name_words}, URL has={url_has_other_type}")
                 return True
+        # Also flag if URL has a DIFFERENT type even if it ALSO has the correct type
+        # (e.g. breadcrumb "siropuri > piure-monin" — the "siropuri" category indicates
+        # the site mainly sells syrups and may return syrup images)
+        # Exception: only flag if the other type word appears BEFORE the correct type in URL
+        # (suggesting it's a parent category, not the product itself)
 
     # Common flavor/variant words that distinguish products within the same brand
     # If any of these appear in URL but NOT in product name, it's a different product
@@ -3727,6 +4033,19 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
             brand_words.append(w)
 
     # === QUERY STRATEGIES (ordered by search-engine friendliness) ===
+    # IMPORTANT: When a product type is present (pireu, sirop, ceai), include it
+    # early in the query list to help sites that sell multiple types differentiate.
+
+    # Strategy 0 (NEW): Brand + RO type + flavor → "MONIN pireu Green Apple mere verzi"
+    # This is the MOST disambiguating query when both type and flavor exist.
+    # Critical for sites that sell both "MONIN sirop" and "MONIN pireu"!
+    if brand_words and type_words:
+        ro_type = " ".join(tw[0] for tw in type_words)
+        if flavor_words:
+            orig_flavors = " ".join(fw[0] for fw in flavor_words)
+            queries.append(f"{' '.join(brand_words)} {ro_type} {orig_flavors}")
+        else:
+            queries.append(f"{' '.join(brand_words)} {ro_type}")
 
     # Strategy 1: Brand + EN flavor only → "MONIN banana" (BEST for most sites)
     if brand_words and flavor_words:
@@ -3738,9 +4057,11 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
         orig_flavors = " ".join(fw[0] for fw in flavor_words)
         queries.append(f"{' '.join(brand_words)} {orig_flavors}")
 
-    # Strategy 3: Just brand → "MONIN" (very broad, needs AI matching to pick right product)
-    if brand_words:
-        queries.append(" ".join(brand_words))
+    # Strategy 3: Brand + type + flavor (EN) → "MONIN puree banana"
+    if brand_words and type_words and flavor_words:
+        en_type = " ".join(tw[1] for tw in type_words)
+        en_flavors = " ".join(fw[1] for fw in flavor_words)
+        queries.append(f"{' '.join(brand_words)} {en_type} {en_flavors}")
 
     # Strategy 4: Concatenated brand + flavor → "TeaTales Blueberry Cream"
     if len(brand_words) >= 2:
@@ -3753,11 +4074,9 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
         else:
             queries.append(brand_str)
 
-    # Strategy 5: Brand + type + flavor (EN) → "MONIN puree banana"
-    if brand_words and type_words and flavor_words:
-        en_type = " ".join(tw[1] for tw in type_words)
-        en_flavors = " ".join(fw[1] for fw in flavor_words)
-        queries.append(f"{' '.join(brand_words)} {en_type} {en_flavors}")
+    # Strategy 5: Just brand → "MONIN" (very broad, needs AI matching)
+    if brand_words:
+        queries.append(" ".join(brand_words))
 
     # Strategy 6: Full cleaned name → "Pireu MONIN Banane"
     queries.append(cleaned_name)
@@ -3796,17 +4115,47 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
         if q_key and q_key not in seen:
             seen.add(q_key)
             unique.append(q_clean)
-    return unique[:5]  # Top 5 queries; more is diminishing returns
+    return unique[:6]  # Top 6 queries
 
 
 def clean_product_query(denumire: str) -> str:
     """
     Remove packaging noise from product name for better search.
     'Ceai Tea Tales 4gr Blueberry Cream NEW (20plic/cut)' → 'Ceai Tea Tales Blueberry Cream'
+    'Pireu MONIN Green Apple (mere verzi) 1L' → 'Pireu MONIN Green Apple mere verzi'
+    'Pireu MONIN Fructe de Padure (Red Berries) 1L' → 'Pireu MONIN Fructe de Padure'
+
+    Parenthetical content handling:
+    - Packaging (numbers, plic, buc, cut, units) → removed
+    - Romanian flavor words (translatable via _RO_EN_MAP) → kept without parens
+    - English translations like (Red Berries) → removed (info already in product name)
     """
     cleaned = denumire
-    # Remove parenthetical hints like "(mere verzi)", "(20plic/cut)"
-    cleaned = re.sub(r'\([^)]*\)', '', cleaned)
+
+    # Smart parenthetical handling
+    def _replace_parens(m):
+        content = m.group(1).strip()
+        # Packaging patterns: (20plic/cut), (10buc), (250g), etc.
+        if re.match(r'^\d+\s*(plic|buc|cut|caps|pac|port|tb|fl)', content, re.IGNORECASE):
+            return ''
+        if re.match(r'^\d+\s*[/\\]', content):
+            return ''
+        # Pure numbers with units: (250g), (1L)
+        if re.match(r'^\d+[.,]?\d*\s*(gr|g|kg|ml|l|cl|oz)?\s*$', content, re.IGNORECASE):
+            return ''
+        # Check if content has Romanian words (translatable) — keep those
+        # "mere verzi" → both words in _RO_EN_MAP → keep
+        # "Red Berries" → neither word in _RO_EN_MAP → remove (English translation)
+        paren_words = re.findall(r'[a-zA-Z]{2,}', content)
+        if paren_words:
+            ro_count = sum(1 for w in paren_words if w.lower() in _RO_EN_MAP)
+            # Keep only if majority of words are Romanian (translatable)
+            if ro_count >= len(paren_words) * 0.5 and ro_count >= 1:
+                return f' {content} '
+        # Default: remove (English translations, unknown content)
+        return ''
+
+    cleaned = re.sub(r'\(([^)]*)\)', _replace_parens, cleaned)
     for pattern in _NOISE_PATTERNS:
         cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
     # Remove extra whitespace
@@ -4042,6 +4391,7 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
         seen_urls = set()
 
         img_to_product_url = {}  # image_url → product_page_url (for conflict checking)
+        img_to_title = {}  # image_url → title/alt text (for text-based type checking)
 
         def collect(results, source):
             for r in results:
@@ -4050,8 +4400,14 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                     seen_urls.add(url)
                     search_urls.append((url, source))
                     # Store product_url mapping for later conflict checking
-                    if r.get("product_url"):
-                        img_to_product_url[url] = r["product_url"]
+                    # DDG uses "url" for page URL, direct scraper uses "product_url"
+                    page_url = r.get("product_url") or r.get("url", "")
+                    if page_url:
+                        img_to_product_url[url] = page_url
+                    # Store title for text-based type checking
+                    title = r.get("title", "") or r.get("alt", "")
+                    if title:
+                        img_to_title[url] = title
 
         # Priority sites first - direct scraping (ALL SITES IN PARALLEL)
         if priority_sites:
@@ -4060,18 +4416,25 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
             skip_words = set(_RO_EN_MAP.keys()) | filler_words
             key_words = [w for w in cleaned_name.split() if w.lower() not in skip_words and len(w) > 1]
             direct_queries = build_direct_search_queries(cleaned_name, key_words)
+            print(f"\n[QUERIES] '{denumire[:50]}' → cleaned='{cleaned_name}' key_words={key_words}")
+            print(f"[QUERIES] direct_queries={direct_queries}")
 
             def _search_one_site(site):
                 """Search a single priority site. Returns (site, results_list).
-                FAST: if first query finds results but ALL are wrong type/conflict,
-                skip remaining queries for this site."""
-                site_had_results = False
+                Tries all query variants. If a query returns good (non-conflicting)
+                results, returns them immediately. If all results from a query
+                conflict, continues to the next query (the next query may be more
+                specific and find the right product)."""
+                conflict_count = 0
                 for dq in direct_queries:
                     try:
+                        print(f"[PRIORITY] {site} searching query='{dq}'...")
                         sr = direct_scraper.search(site, dq, max_results=max_candidates,
                                                    product_name=denumire)
+                        print(f"[PRIORITY] {site} query='{dq}' → {len(sr) if sr else 0} raw results")
                         if sr:
-                            site_had_results = True
+                            for r in sr[:3]:
+                                print(f"  raw: img={r.get('image','')[:60]} | url={r.get('product_url','')[:60]} | title={r.get('title','')[:40]}")
                             # Final safety: filter out conflicting products
                             filtered_sr = []
                             for r in sr:
@@ -4087,11 +4450,17 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                                     print(f"[PRIORITY] {site} query='{dq}' → image={r.get('image','')[:80]} | product_url={r.get('product_url','')[:80]}")
                                 return (site, filtered_sr)
                             else:
-                                # Site has products but ALL conflict — don't try more queries
-                                print(f"[PRIORITY] {site} query='{dq}' → all {len(sr)} results conflicted, skipping site")
-                                return (site, [])
+                                # ALL results conflicted — try next query (may be more specific)
+                                conflict_count += 1
+                                print(f"[PRIORITY] {site} query='{dq}' → all {len(sr)} results conflicted, trying next query...")
+                                # After 3 conflicting queries, give up on this site
+                                if conflict_count >= 3:
+                                    print(f"[PRIORITY] {site} → {conflict_count} queries all conflicted, giving up")
+                                    return (site, [])
                     except Exception as e:
+                        print(f"[PRIORITY] {site} query='{dq}' EXCEPTION: {e}")
                         logger.debug(f"Direct scrape failed for {site}: {e}")
+                print(f"[PRIORITY] {site} → NO results from any of {len(direct_queries)} queries")
                 return (site, [])
 
             # Search ALL priority sites in parallel
@@ -4104,32 +4473,60 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                     if sr:
                         collect(sr, f"direct:{site}")
 
-            # === PHASE 2: Search engine fallback (if NO site returned results) ===
-            if not search_urls:
-                for site in priority_sites[:2]:  # Limit fallback to first 2 sites
-                    site_queries = [
-                        f"site:{site} {cleaned_name}",
-                    ]
+            # === PHASE 2: Google/Bing site: search for sites that returned NO results ===
+            # Unlike before (only when ALL sites failed), now we do site: search
+            # for EACH site that didn't return results from direct scraping.
+            # This catches products that exist on the site but aren't found by
+            # the site's own (often weak) internal search engine.
+            sites_with_results = {site for site in priority_sites
+                                  if any(src.endswith(f":{site}") for _, src in search_urls)}
+            sites_needing_fallback = [s for s in priority_sites if s not in sites_with_results]
+
+            print(f"[SITE-FALLBACK] sites_with_results={sites_with_results}, sites_needing_fallback={sites_needing_fallback}")
+
+            if sites_needing_fallback:
+                def _site_search_fallback(site):
+                    """Use Bing/DDG with site: operator for a single priority site."""
+                    site_queries = [f"site:{site} {cleaned_name}"]
                     if key_words and len(key_words) < len(cleaned_name.split()):
                         site_queries.append(f"site:{site} {' '.join(key_words)}")
+                    # Try concatenated brand words (e.g. "TeaTales")
                     if len(key_words) >= 2:
                         merged = key_words[0] + key_words[1]
                         rest = key_words[2:]
                         concat_q = f"{merged} {' '.join(rest)}" if rest else merged
                         site_queries.append(f"site:{site} {concat_q}")
+                    # Try brand + EN flavor
+                    for dq in direct_queries[:2]:
+                        sq = f"site:{site} {dq}"
+                        if sq not in site_queries:
+                            site_queries.append(sq)
 
+                    print(f"[SITE-FALLBACK] {site} trying queries: {list(dict.fromkeys(site_queries))}")
                     for sq in dict.fromkeys(site_queries):
-                        send("search_phase", {"index": idx, "phase": "priority", "site": site, "query": sq})
                         for sn, searcher in [("bing", bing_scraper), ("ddg", ddg)]:
                             try:
                                 sr = searcher.search(sq, max_results=max_candidates)
                                 if sr:
-                                    collect(sr, f"{sn}:{site}")
-                                    break
-                            except Exception:
-                                pass
-                        if len(search_urls) >= max_candidates:
-                            break
+                                    print(f"[SITE-FALLBACK] {site} query='{sq}' → {len(sr)} results via {sn}")
+                                    return (site, sr, sn, sq)
+                                else:
+                                    print(f"[SITE-FALLBACK] {site} query='{sq}' → 0 results via {sn}")
+                            except Exception as e:
+                                print(f"[SITE-FALLBACK] {site} query='{sq}' → error via {sn}: {e}")
+                    print(f"[SITE-FALLBACK] {site} → NO results from any query")
+                    return (site, [], None, None)
+
+                send("search_phase", {"index": idx, "phase": "priority-site-search",
+                     "site": ", ".join(sites_needing_fallback),
+                     "query": f"site: fallback for {len(sites_needing_fallback)} site(s)"})
+                with ThreadPoolExecutor(max_workers=min(len(sites_needing_fallback), 5)) as pool:
+                    futures = {pool.submit(_site_search_fallback, site): site
+                               for site in sites_needing_fallback}
+                    for future in as_completed(futures):
+                        site, sr, sn, sq = future.result()
+                        if sr:
+                            collect(sr, f"{sn}:{site}")
 
         # General search with multiple query variants
         for qi, query in enumerate(query_variants):
@@ -4239,6 +4636,30 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
             url_score = url_keyword_score(score_url, denumire)
             url_score_100 = round(url_score * 100)
 
+            # TEXT-BASED TYPE CHECK: check URL, product_url AND title for type conflicts
+            # This works even without CLIP and catches cases like "sirop" in title
+            # when product is "pireu"
+            text_sources_to_check = [url]
+            if url in img_to_product_url:
+                text_sources_to_check.append(img_to_product_url[url])
+            if url in img_to_title:
+                text_sources_to_check.append(img_to_title[url])
+            text_type_conflict = False
+            for text_src in text_sources_to_check:
+                if url_has_conflicting_product(text_src, denumire):
+                    text_type_conflict = True
+                    print(f"[TEXT-TYPE] Rejected {url[:80]} — conflict in: {text_src[:100]}")
+                    break
+            if text_type_conflict:
+                send("candidate_checked", {
+                    "index": idx, "url": url[:100],
+                    "quality_score": qc["score"], "passed": False,
+                    "reasons": ["Wrong product type (text-based check)"],
+                    "details": qc["details"],
+                    "relevance_score": None,
+                })
+                continue
+
             if relevance_checker:
                 rc = relevance_checker.check(data, denumire)
                 clip_score = rc["score"]
@@ -4247,6 +4668,38 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                 # Claude Vision API check (below) is far more reliable for this.
                 if rc.get("multi_product", False):
                     logger.info(f"CLIP flagged multi-product (informational only): {url[:80]}")
+
+                # CLIP TYPE CHECK: compare image against all product type variants
+                # (e.g. "pireu monin banana" vs "sirop monin banana")
+                # Reuses cached image_features from check() for zero extra cost
+                img_feat = rc.get("_image_features")
+                if img_feat is not None:
+                    tc = relevance_checker.type_check(img_feat, denumire)
+                    if not tc.get("ok", True):
+                        send("candidate_checked", {
+                            "index": idx, "url": url[:100],
+                            "quality_score": qc["score"], "passed": False,
+                            "reasons": [f"Wrong product type: looks like {tc['best_match']} not {tc['expected_type']}"],
+                            "details": {**qc["details"], "type_scores": tc.get("scores", {}),
+                                        "clip": clip_score},
+                            "relevance_score": round(clip_score * 0.7 + url_score_100 * 0.3),
+                        })
+                        print(f"[TYPE-CHECK] Rejected {url[:80]} — {tc['reason']}")
+                        continue
+
+                    # PACKAGING CHECK: reject loose/raw images when product implies packaging
+                    pc = relevance_checker.packaging_check(img_feat, denumire)
+                    if not pc.get("ok", True):
+                        send("candidate_checked", {
+                            "index": idx, "url": url[:100],
+                            "quality_score": qc["score"], "passed": False,
+                            "reasons": [f"Not packaged product ({pc.get('reason', '')})"],
+                            "details": {**qc["details"], "packaged": pc.get("packaged_score"),
+                                        "loose": pc.get("loose_score"), "clip": clip_score},
+                            "relevance_score": round(clip_score * 0.7 + url_score_100 * 0.3),
+                        })
+                        print(f"[PACKAGING] Rejected {url[:80]} — {pc['reason']}")
+                        continue
 
                 # Combined score: 70% CLIP + 30% URL keywords
                 relevance_score = round(clip_score * 0.7 + url_score_100 * 0.3)
@@ -4400,6 +4853,17 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                     if product_url_fb and url_has_conflicting_product(product_url_fb, denumire):
                         fallback_ok = False
                         fallback_reasons.append("Product page conflict (local fallback)")
+                    # Check search result title/snippet for type conflict
+                    # (search engine results often contain "sirop" or "piure" in title)
+                    result_title = img_to_product_url.get(url, "") or url
+                    # Also check the referrer page title if available
+                    for su, ss in search_urls:
+                        if su == url and isinstance(ss, str) and ss:
+                            result_title = ss + " " + result_title
+                            break
+                    if url_has_conflicting_product(result_title, denumire):
+                        fallback_ok = False
+                        fallback_reasons.append("Search result type conflict (local fallback)")
                     # Require higher CLIP score when no Vision
                     if clip_score is not None and clip_score < 0.22:
                         fallback_ok = False
