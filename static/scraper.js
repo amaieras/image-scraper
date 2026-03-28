@@ -219,7 +219,7 @@ function addResultCard(data) {
   grid.innerHTML += `
     <div class="result-card" id="${cardId}" data-product-id="${escapeHtml(data.product_id || '')}" data-denumire="${escapeHtml(data.denumire)}">
       <div class="result-header">
-        <div class="result-name">${escapeHtml(data.denumire)}</div>
+        <div class="result-name">${escapeHtml(data.denumire)}<button class="copy-name-btn" title="Copiază numele" onclick="copyProductName(this, '${escapeHtml(data.denumire).replace(/'/g, "\\'")}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>
         <div class="result-status ${statusCls}">${statusText}</div>
       </div>
       <div class="result-images">${imagesHtml}</div>
@@ -231,7 +231,7 @@ function addResultCard(data) {
       </div>
       <div class="replace-form" id="replace-${cardId}" style="display:none">
         <div class="replace-row">
-          <span class="replace-info-icon" title="Click dreapta pe imagine → Copy Image Address / Copiază adresa imaginii">ⓘ</span>
+          <span class="replace-info-icon" data-tip="Click dreapta pe imagine → Copy Image Address / Copiază adresa imaginii. Acceptă și link-uri data:image (base64).">ⓘ</span>
           <input type="text" class="replace-input" id="replaceUrl-${cardId}" placeholder="Lipește link direct la imagine...">
           <button class="btn btn-sm btn-approve" onclick="submitReplace('${cardId}', 'url')">Descarcă</button>
         </div>

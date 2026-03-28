@@ -87,7 +87,8 @@ async function submitReplace(cardId, mode) {
       imgEl.className = 'result-img';
       imgEl.src = 'data:image/jpeg;base64,' + img.thumbnail;
       imgEl.title = denumire;
-      imgEl.onclick = function(e) { e.stopPropagation(); openLightbox(img.image_url); };
+      var lightboxUrl = img.image_url && img.image_url.startsWith('http') ? img.image_url : ('data:image/jpeg;base64,' + img.thumbnail);
+      imgEl.onclick = function(e) { e.stopPropagation(); openLightbox(lightboxUrl); };
       imgContainer.appendChild(imgEl);
 
       var zoomHint = document.createElement('div');

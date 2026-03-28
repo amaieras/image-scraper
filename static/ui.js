@@ -23,6 +23,17 @@ function addLog(cls, html) {
   container.scrollTop = container.scrollHeight;
 }
 
+// ─── Copy Product Name ───────────────────────────────────────────────
+
+function copyProductName(btn, name) {
+  navigator.clipboard.writeText(name).then(function() {
+    var original = btn.innerHTML;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+    btn.classList.add('copied');
+    setTimeout(function() { btn.innerHTML = original; btn.classList.remove('copied'); }, 1500);
+  });
+}
+
 // ─── Lightbox ────────────────────────────────────────────────────────
 
 function openLightbox(url) {
@@ -89,4 +100,25 @@ function updateThemeIcon(theme) {
   const saved = localStorage.getItem('theme') || 'dark';
   if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
   updateThemeIcon(saved);
+})();
+
+// ─── Custom Tooltip (for [data-tip] elements) ───────────────────────
+
+(function() {
+  var tip = null;
+  document.addEventListener('mouseenter', function(e) {
+    var el = e.target.closest('[data-tip]');
+    if (!el) return;
+    tip = document.createElement('div');
+    tip.className = 'custom-tooltip';
+    tip.textContent = el.getAttribute('data-tip');
+    document.body.appendChild(tip);
+    var r = el.getBoundingClientRect();
+    tip.style.left = Math.min(r.left, window.innerWidth - tip.offsetWidth - 8) + 'px';
+    tip.style.top = (r.top - tip.offsetHeight - 6) + 'px';
+    if (parseFloat(tip.style.top) < 4) tip.style.top = (r.bottom + 6) + 'px';
+  }, true);
+  document.addEventListener('mouseleave', function(e) {
+    if (e.target.closest('[data-tip]') && tip) { tip.remove(); tip = null; }
+  }, true);
 })();

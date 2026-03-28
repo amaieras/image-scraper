@@ -4998,9 +4998,52 @@ def replace_image():
     source_url = ""
 
     if image_url:
-        # Mode 1: Direct URL download
-        img_data = download_image(image_url)
-        source_url = image_url
+        # Try to extract a direct image URL from wrapper/redirect links
+        # Covers: Google Images (imgurl=), Bing Images (mediaurl=), Pinterest (imgurl=),
+        # and any URL that has an image URL embedded in query parameters
+        if not image_url.startswith("data:") and "?" in image_url:
+            from urllib.parse import parse_qs, urlparse as _urlparse, unquote
+            try:
+                parsed = _urlparse(image_url)
+                qs = parse_qs(parsed.query)
+                # Known parameter names that contain the real image URL
+                img_params = ["imgurl", "mediaurl", "url", "img_url", "image_url",
+                              "imgrefurl", "src", "source", "orig"]
+                # Check if the top-level URL itself points to an image
+                path_lower = parsed.path.lower()
+                is_direct_image = any(path_lower.endswith(ext) for ext in
+                                      [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"])
+                if not is_direct_image:
+                    # Try to find a real image URL in query params
+                    for param in img_params:
+                        if param in qs:
+                            candidate = unquote(qs[param][0])
+                            candidate_lower = candidate.lower()
+                            if candidate.startswith("http") and any(
+                                ext in candidate_lower for ext in
+                                [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+                                 "/image", "/photo", "/img", "akamaized", "cloudfront",
+                                 "cdn", "media", "static"]):
+                                image_url = candidate
+                                logger.info(f"Extracted image URL from '{param}' param: {image_url[:100]}")
+                                break
+            except Exception as e:
+                logger.warning(f"Failed to parse wrapper URL: {e}")
+
+        # Mode 1a: Base64 data URI (e.g. from Google Images "Copy Image Address")
+        if image_url.startswith("data:image/"):
+            try:
+                # Format: data:image/webp;base64,UklGR...
+                header, b64data = image_url.split(",", 1)
+                img_data = base64.b64decode(b64data)
+                source_url = "data:image (base64)"
+            except Exception as e:
+                logger.error(f"Failed to decode base64 image: {e}")
+                return jsonify({"error": "Nu am putut decoda imaginea base64. Încearcă să descarci imaginea și să o uploadezi."}), 400
+        else:
+            # Mode 1b: Direct URL download
+            img_data = download_image(image_url)
+            source_url = image_url
         if not img_data:
             return jsonify({"error": f"Nu am putut descărca imaginea de la: {image_url[:100]}"}), 400
 

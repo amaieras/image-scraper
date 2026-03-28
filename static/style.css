@@ -59,6 +59,8 @@ body {
 /* ─── Layout ─── */
 .app { max-width: 1200px; margin: 0 auto; padding: 24px; position: relative; }
 .header { text-align: center; margin-bottom: 32px; }
+.header-title { display: flex; align-items: center; justify-content: center; gap: 12px; }
+.header-logo { width: 40px; height: 40px; }
 .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
 .header h1 span { color: var(--accent-light); }
 .header p { color: var(--text-dim); font-size: 14px; }
@@ -233,7 +235,14 @@ select { cursor: pointer; }
   padding: 12px 16px; border-bottom: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center;
 }
-.result-name { font-size: 13px; font-weight: 600; }
+.result-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.copy-name-btn {
+  background: none; border: none; cursor: pointer; font-size: 14px; padding: 2px 4px;
+  opacity: 0.4; transition: opacity 0.2s; border-radius: 4px; flex-shrink: 0;
+  color: var(--text); display: inline-flex; align-items: center;
+}
+.copy-name-btn:hover { opacity: 1; background: var(--surface2); }
+.copy-name-btn.copied { opacity: 1; color: var(--success); }
 .result-status {
   font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px;
 }
@@ -389,6 +398,13 @@ select { cursor: pointer; }
   opacity: 0.6; transition: opacity 0.15s; line-height: 1;
 }
 .replace-info-icon:hover { opacity: 1; }
+.custom-tooltip {
+  position: fixed; z-index: 9999; padding: 8px 12px; border-radius: 6px;
+  background: var(--surface2, #242836); color: var(--text, #e4e6f0);
+  font-size: 12px; line-height: 1.4; max-width: 260px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3); border: 1px solid var(--border, #2e3347);
+  pointer-events: none; white-space: normal;
+}
 .replace-divider {
   text-align: center; font-size: 11px; color: var(--text-dim);
   margin: 6px 0; font-style: italic;
