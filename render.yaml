@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: image-scraper
+    runtime: docker
+    plan: free
+    envVars:
+      - key: DISABLE_CLIP
+        value: "true"
+      - key: PORT
+        value: "10000"
+      - key: ANTHROPIC_API_KEY
+        sync: false  # Set manually in Render dashboard

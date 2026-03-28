@@ -4315,7 +4315,9 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
     def send(event_type, data):
         event_queue.put({"event": event_type, "data": data})
 
-    # Relevance checker (CLIP)
+    # Relevance checker (CLIP) — can be disabled via env var for lightweight deployments
+    if os.environ.get("DISABLE_CLIP", "").lower() in ("1", "true", "yes"):
+        config["check_relevance"] = False
     use_relevance = config.get("check_relevance", True)
     min_relevance = config.get("min_relevance", 0.20)
     relevance_checker = get_relevance_checker(min_relevance) if use_relevance else None
@@ -5589,7 +5591,7 @@ def list_jobs():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Image Scraper UI")
-    parser.add_argument("--port", "-p", type=int, default=8787)
+    parser.add_argument("--port", "-p", type=int, default=int(os.environ.get("PORT", 8787)))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()

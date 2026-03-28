@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+output/
+input products/
+*.pyc
+.git/
+*.docx
+*.bat
+deploy-*.sh
+deploy.sh
+deploy.bat
+INSTALL-WINDOWS.txt
+FEATURES.md

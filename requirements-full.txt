@@ -1,0 +1,6 @@
+# Full requirements including CLIP and rembg (for local deployment with GPU/large RAM)
+-r requirements.txt
+rembg>=2.0.0
+onnxruntime>=1.16.0
+open-clip-torch>=2.24.0
+sentence-transformers>=2.2.0
