@@ -5368,6 +5368,38 @@ def serve_image(job_id, filename):
     return send_from_directory(str(img_dir), filename)
 
 
+@app.route("/api/download-zip/<job_id>")
+def download_zip(job_id):
+    """Create and serve a ZIP of all images for this job."""
+    import zipfile
+    job_dir = OUTPUT_DIR / job_id
+    pending_dir = job_dir / "_pending"
+
+    # Collect all image files from both dirs
+    files = []
+    for d in [job_dir, pending_dir]:
+        if d.exists():
+            for f in d.iterdir():
+                if f.is_file() and f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.gif'):
+                    files.append(f)
+
+    if not files:
+        return jsonify({"error": "No images found"}), 404
+
+    # Create ZIP in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            zf.write(f, f.name)
+    zip_buffer.seek(0)
+
+    return Response(
+        zip_buffer.getvalue(),
+        mimetype='application/zip',
+        headers={'Content-Disposition': f'attachment; filename=images-{job_id}.zip'}
+    )
+
+
 @app.route("/api/approve", methods=["POST"])
 def approve_images():
     """

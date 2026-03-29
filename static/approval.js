@@ -172,3 +172,48 @@ async function approveSelected() {
     approveBtn.textContent = 'Aprobă Selecția';
   }
 }
+
+// ─── Download Functions ─────────────────────────────────────────────
+
+function downloadSingleImage(imageUrl, filename) {
+  if (!currentJobId) return;
+  // Try to download from our server first (cached in _pending or output)
+  const serverUrl = `/api/images/${currentJobId}/${filename}`;
+  const a = document.createElement('a');
+  a.href = serverUrl;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+async function downloadZip() {
+  if (!currentJobId) return;
+  const btn = document.getElementById('downloadZipBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Se pregătește...';
+  }
+  try {
+    const resp = await fetch(`/api/download-zip/${currentJobId}`);
+    if (!resp.ok) throw new Error('ZIP generation failed');
+    const blob = await resp.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `images-${currentJobId}.zip`;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  } catch (err) {
+    alert('Eroare la descărcare ZIP: ' + err.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Descarcă ZIP';
+    }
+  }
+}

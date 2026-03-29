@@ -68,6 +68,28 @@ body {
 .main-grid { display: grid; grid-template-columns: 1fr 340px; gap: 24px; }
 @media (max-width: 900px) { .main-grid { grid-template-columns: 1fr; } }
 
+/* ─── Mobile Responsive Fixes ─── */
+@media (max-width: 600px) {
+  .top-controls {
+    position: static; display: flex; justify-content: flex-end;
+    margin-bottom: 8px; padding: 0 4px;
+  }
+  .header { margin-bottom: 16px; }
+  .header h1 { font-size: 22px; }
+  .app { padding: 12px; }
+  .approval-toolbar {
+    left: 8px; right: 8px; transform: none;
+    padding: 8px 12px; gap: 8px; border-radius: 10px;
+    flex-wrap: wrap; justify-content: center;
+  }
+  .approval-toolbar.visible { bottom: 8px; }
+  .approval-actions { gap: 4px; }
+  .approval-actions .btn { font-size: 11px; padding: 6px 10px; }
+  .approval-count { font-size: 11px; min-width: auto; }
+  .btn-approve { font-size: 12px; padding: 8px 14px; }
+  .btn-download-zip { font-size: 11px; padding: 6px 12px; }
+}
+
 /* ─── Cards ─── */
 .card {
   background: var(--surface); border: 1px solid var(--border);
@@ -371,6 +393,25 @@ select { cursor: pointer; }
 .btn-approve:hover { background: #00a884; transform: translateY(-1px); }
 .btn-approve:disabled { background: var(--surface2); color: var(--text-dim); cursor: not-allowed; transform: none; }
 .btn-approve.done { background: var(--success); cursor: default; }
+
+.btn-download-zip {
+  background: var(--accent); color: white; padding: 8px 16px;
+  border: none; border-radius: 8px; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s; white-space: nowrap;
+}
+.btn-download-zip:hover { background: var(--accent-light); transform: translateY(-1px); }
+.btn-download-zip:disabled { background: var(--surface2); color: var(--text-dim); cursor: not-allowed; transform: none; }
+
+.img-download-btn {
+  position: absolute; bottom: 6px; right: 6px;
+  background: rgba(0,0,0,0.65); color: white; border: none;
+  border-radius: 6px; padding: 4px 8px; font-size: 11px;
+  cursor: pointer; opacity: 0; transition: opacity 0.2s;
+  z-index: 5; display: flex; align-items: center; gap: 3px;
+}
+.img-container:hover .img-download-btn { opacity: 1; }
+.img-download-btn:hover { background: rgba(0,0,0,0.85); }
+.img-download-btn svg { width: 12px; height: 12px; }
 
 /* ─── Replace image form ─── */
 .replace-link {
