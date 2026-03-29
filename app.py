@@ -1528,6 +1528,8 @@ class DirectSiteScraper:
                 _skip_sa = set(_RO_EN_MAP.keys()) | set(_RO_EN_MAP.values()) | {
                     "cafea", "coffee", "ceai", "tea", "boabe", "beans",
                     "capsule", "capsules", "sirop", "syrup", "piure", "pireu",
+                    "plic", "pliculete", "cutie", "pachet", "punga", "borcan",
+                    "sticla", "doza", "doze", "tableta", "tablete", "portie",
                 }
                 distinctive_sa = {w for w in pn_words if w not in _skip_sa}
                 if distinctive_sa:
@@ -1604,15 +1606,12 @@ class DirectSiteScraper:
         base_url = f"https://{site}" if not site.startswith("http") else site
         domain = urlparse(base_url).netloc
 
-        # === PHASE 0: Try Searchanise JSON API (most reliable for sites that use it) ===
-        sa_results = self._try_searchanise_api(site, query, product_name, max_results)
-        if sa_results:
-            return sa_results
-
         # Track if site had results but all were wrong type (for caching)
         _site_had_results_but_all_wrong = False
 
-        # Fetch all search patterns in PARALLEL, then process in order
+        # === Run Searchanise API and pattern search IN PARALLEL ===
+        # This eliminates cold-start penalty: Searchanise discovery (homepage fetch)
+        # used to block ~3-6s before pattern search could start. Now both run at once.
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _fetch_pattern(pattern):
@@ -1621,19 +1620,34 @@ class DirectSiteScraper:
                 query=requests.utils.quote(query)
             )
             try:
-                resp = self.session.get(search_url, timeout=4)
+                resp = self.session.get(search_url, timeout=6)
                 if resp.status_code == 200:
                     return (pattern, resp)
             except Exception:
                 pass
             return (pattern, None)
 
+        sa_results_holder = [None]  # mutable container for thread result
+
+        def _fetch_searchanise():
+            """Try Searchanise API in parallel with pattern search."""
+            sa_results_holder[0] = self._try_searchanise_api(site, query, product_name, max_results)
+
         pattern_responses = {}
-        with ThreadPoolExecutor(max_workers=min(len(self.SEARCH_PATTERNS), 8)) as pool:
+        with ThreadPoolExecutor(max_workers=min(len(self.SEARCH_PATTERNS) + 1, 10)) as pool:
+            # Submit Searchanise discovery + all patterns at once
+            sa_future = pool.submit(_fetch_searchanise)
             futures = {pool.submit(_fetch_pattern, p): p for p in self.SEARCH_PATTERNS}
+            # Wait for all pattern responses
             for future in as_completed(futures):
                 pattern, resp = future.result()
                 pattern_responses[pattern] = resp
+            # Also wait for Searchanise
+            sa_future.result()
+
+        # Check Searchanise results first (most reliable when available)
+        if sa_results_holder[0]:
+            return sa_results_holder[0]
 
         # Process responses in original pattern priority order
         for pattern in self.SEARCH_PATTERNS:
@@ -1673,6 +1687,9 @@ class DirectSiteScraper:
                     _skip_pf = set(_RO_EN_MAP.keys()) | set(_RO_EN_MAP.values()) | {
                         "cafea", "coffee", "ceai", "tea", "boabe", "beans",
                         "capsule", "capsules", "sirop", "syrup", "piure", "pireu",
+                        # Packaging words — describe HOW it's packaged, not WHAT it is
+                        "plic", "pliculete", "cutie", "pachet", "punga", "borcan",
+                        "sticla", "doza", "doze", "tableta", "tablete", "portie",
                     }
                     distinctive_pf = {w for w in pn_words if w not in _skip_pf}
                     if distinctive_pf:
