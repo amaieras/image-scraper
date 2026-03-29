@@ -78,15 +78,16 @@ body {
   .header h1 { font-size: 22px; }
   .app { padding: 12px; padding-bottom: 80px; }
   .approval-toolbar {
-    left: 0; right: 0; bottom: -120px !important; transform: none;
-    padding: 10px 12px; gap: 6px; border-radius: 12px 12px 0 0;
-    display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between;
+    left: 0 !important; right: 0 !important; bottom: -120px !important; transform: none !important;
+    width: 100% !important; max-width: 100% !important;
+    padding: 10px 12px; gap: 8px; border-radius: 12px 12px 0 0;
+    display: flex; flex-wrap: nowrap; align-items: center; justify-content: center;
   }
   .approval-toolbar.visible { bottom: 0 !important; }
-  .approval-actions { display: none; }
-  .approval-count { font-size: 11px; min-width: auto; flex-shrink: 0; }
-  .btn-approve { font-size: 13px; padding: 10px 16px; flex-shrink: 0; }
-  .btn-download-zip { font-size: 12px; padding: 8px 14px; flex-shrink: 0; }
+  .approval-actions { display: none !important; }
+  .approval-count { font-size: 12px; min-width: auto; }
+  .btn-approve { font-size: 13px; padding: 10px 14px; }
+  .btn-download-zip { font-size: 12px; padding: 8px 12px; }
   .img-download-btn { opacity: 1; }
 }
 
