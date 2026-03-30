@@ -292,6 +292,32 @@
           <input type="hidden" id="rejectBlurry" value="true">
         </div>
 
+        <!-- Hermes Integration -->
+        <div class="config-group hermes-section" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);">
+          <div class="toggle-row">
+            <span class="toggle-label">
+              <i data-lucide="server" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;"></i>
+              Hermes B2B Export
+              <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
+                <span class="tip-text">La aprobare, creează copii JPEG redimensionate (max 800×800px) cu denumire Hermes: ID\}\{Comentariu#N.jpg. Necesită fișier Excel cu coloană ID/Cod.</span>
+              </span>
+            </span>
+            <label class="toggle">
+              <input type="checkbox" id="hermesEnabled" onchange="toggleHermesPath()">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div id="hermesPathGroup" style="display:none;margin-top:8px;">
+            <label class="config-label" style="font-size:0.82rem;color:var(--muted);">Cale export Hermes (opțional)</label>
+            <input type="text" id="hermesOutputPath" class="replace-input"
+              placeholder="ex: \\\\10.50.0.15\\imagini sau /mnt/hermes"
+              style="width:100%;font-size:0.85rem;margin-top:4px;">
+            <div style="font-size:0.75rem;color:var(--muted);margin-top:3px;">
+              Gol = doar local (_hermes/). Completează pentru export pe server.
+            </div>
+          </div>
+        </div>
+
         <!-- Hidden keys (loaded from config.json) -->
         <div style="display:none;">
           <input type="text" id="geminiKey" value="">
@@ -321,17 +347,37 @@
   </div>
 </div>
 
-<script src="/static/state.js?v=13"></script>
-<script src="/static/ui.js?v=13"></script>
-<script src="/static/approval.js?v=13"></script>
-<script src="/static/replace.js?v=13"></script>
-<script src="/static/scraper.js?v=13"></script>
-<script src="/static/app.js?v=13"></script>
+<script src="/static/state.js?v=14"></script>
+<script src="/static/ui.js?v=14"></script>
+<script src="/static/approval.js?v=14"></script>
+<script src="/static/replace.js?v=14"></script>
+<script src="/static/scraper.js?v=14"></script>
+<script src="/static/app.js?v=14"></script>
 <script>lucide.createIcons();</script>
 <script>
-// Load saved config (Gemini key) on page load
+// Toggle Hermes path visibility + save config
+function toggleHermesPath(){
+  const on=document.getElementById('hermesEnabled').checked;
+  document.getElementById('hermesPathGroup').style.display=on?'block':'none';
+  saveHermesConfig();
+}
+function saveHermesConfig(){
+  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({hermes_enabled:document.getElementById('hermesEnabled').checked,
+      hermes_output_path:document.getElementById('hermesOutputPath').value.trim()})
+  }).catch(()=>{});
+}
+// Debounced save for path input
+let _hermesPathTimer;
+document.addEventListener('DOMContentLoaded',()=>{
+  const hp=document.getElementById('hermesOutputPath');
+  if(hp)hp.addEventListener('input',()=>{clearTimeout(_hermesPathTimer);_hermesPathTimer=setTimeout(saveHermesConfig,800);});
+});
+// Load saved config on page load
 fetch('/api/config').then(r=>r.json()).then(cfg=>{
   if(cfg.gemini_key){document.getElementById('geminiKey').value=cfg.gemini_key;}
+  if(cfg.hermes_enabled){document.getElementById('hermesEnabled').checked=true;toggleHermesPath();}
+  if(cfg.hermes_output_path){document.getElementById('hermesOutputPath').value=cfg.hermes_output_path;}
 }).catch(()=>{});
 </script>
 </body>

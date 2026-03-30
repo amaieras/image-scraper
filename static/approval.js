@@ -135,7 +135,11 @@ async function approveSelected() {
 
     if (data.ok) {
       approvalDone = true;
-      addLog('pass', `Aprobat! ${data.moved} imagini salvate, ${data.deleted} respinse.`);
+      let logMsg = `Aprobat! ${data.moved} imagini salvate, ${data.deleted} respinse.`;
+      if (data.hermes_count > 0) {
+        logMsg += ` Hermes: ${data.hermes_count} copii create.`;
+      }
+      addLog('pass', logMsg);
 
       // Visual feedback: mark approved cards green, rejected grey
       document.querySelectorAll('.img-wrapper').forEach(w => {
@@ -156,7 +160,8 @@ async function approveSelected() {
       });
 
       // Update toolbar to show success
-      approveBtn.textContent = `${data.moved} imagini salvate`;
+      const hermesInfo = data.hermes_count > 0 ? ` + ${data.hermes_count} Hermes` : '';
+      approveBtn.textContent = `${data.moved} imagini salvate${hermesInfo}`;
       approveBtn.classList.add('done');
 
       // Hide select all / deselect all buttons

@@ -5030,6 +5030,13 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                     "thumbnail": thumb,
                     "details": qc["details"],
                 })
+                # Store product metadata for Hermes naming at approve time
+                job = active_jobs.get(job_id)
+                if job and "product_map" in job:
+                    job["product_map"][filename] = {
+                        "id": product_id,
+                        "denumire": denumire,
+                    }
             except Exception as e:
                 logger.debug(f"Process error for {denumire}: {e}")
 
@@ -5066,11 +5073,13 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
 
 # ─── FILE PARSERS ─────────────────────────────────────────────────────────
 
-def parse_uploaded_file(file_storage) -> list[str]:
+def parse_uploaded_file(file_storage) -> list[dict] | list[str]:
     """
-    Extract product names from uploaded file.
+    Extract product data from uploaded file.
     Supports: .xlsx, .xls, .csv, .tsv, .txt, .docx, .pdf
-    Returns a list of product name strings.
+
+    For Excel/CSV with id/cod column: returns list of dicts {id, denumire}
+    For plain text/docx/pdf: returns list of product name strings.
     """
     filename = file_storage.filename.lower()
     data = file_storage.read()
@@ -5091,8 +5100,11 @@ def parse_uploaded_file(file_storage) -> list[str]:
         raise ValueError(f"Unsupported file type: {filename}")
 
 
-def _parse_excel(data: bytes) -> list[str]:
-    """Parse .xlsx - takes the first column with text data, or a 'denumire' column."""
+def _parse_excel(data: bytes) -> list[dict] | list[str]:
+    """Parse .xlsx - extracts product data.
+    If an 'id'/'cod' column exists alongside 'denumire', returns list of dicts.
+    Otherwise returns list of product name strings (backward compatible).
+    """
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     ws = wb.active
@@ -5100,20 +5112,27 @@ def _parse_excel(data: bytes) -> list[str]:
     if not rows:
         return []
 
-    # Check header row for a known column name
+    # Check header row for known column names
     header = [str(c).lower().strip() if c else "" for c in rows[0]]
-    target_col = None
+
+    # Find the 'denumire' (product name) column
+    name_col = None
     for keyword in ["denumire", "produs", "product", "name", "nume", "descriere", "description", "item"]:
         if keyword in header:
-            target_col = header.index(keyword)
+            name_col = header.index(keyword)
             break
 
-    if target_col is not None:
-        # Use the identified column, skip header
-        lines = [str(row[target_col]).strip() for row in rows[1:] if row[target_col]]
+    # Find the 'id'/'cod' (product ID/code) column for Hermes naming
+    id_col = None
+    for keyword in ["id", "cod", "code", "id_produs", "cod_produs", "product_id", "sku", "barcode"]:
+        if keyword in header:
+            id_col = header.index(keyword)
+            break
+
+    if name_col is not None:
+        data_rows = rows[1:]  # skip header
     else:
         # Auto-detect: use the first column that has mostly text
-        # Try each column, pick the one with most non-empty string values
         best_col = 0
         best_count = 0
         num_cols = max(len(r) for r in rows) if rows else 0
@@ -5123,22 +5142,39 @@ def _parse_excel(data: bytes) -> list[str]:
             if count > best_count:
                 best_count = count
                 best_col = ci
-
+        name_col = best_col
         # Check if first row looks like a header
         first_val = str(rows[0][best_col]).strip() if rows[0][best_col] else ""
         start = 1 if (first_val.lower() in header or len(first_val) < 20) else 0
-        lines = [str(row[best_col]).strip() for row in rows[start:]
-                 if len(row) > best_col and row[best_col] and str(row[best_col]).strip()]
+        data_rows = rows[start:]
 
-    wb.close()
-    return [l for l in lines if l and l.lower() != "none"]
+    # If we have an ID column, return dicts; otherwise return strings
+    if id_col is not None:
+        results = []
+        for row in data_rows:
+            if len(row) <= name_col or not row[name_col]:
+                continue
+            denumire = str(row[name_col]).strip()
+            if not denumire or denumire.lower() == "none":
+                continue
+            prod_id = str(row[id_col]).strip() if len(row) > id_col and row[id_col] else ""
+            # Clean up numeric IDs (remove .0 from Excel float conversion)
+            if prod_id.endswith(".0"):
+                prod_id = prod_id[:-2]
+            results.append({"id": prod_id, "denumire": denumire})
+        wb.close()
+        return results
+    else:
+        lines = [str(row[name_col]).strip() for row in data_rows
+                 if len(row) > name_col and row[name_col] and str(row[name_col]).strip()]
+        wb.close()
+        return [l for l in lines if l and l.lower() != "none"]
 
 
-def _parse_csv(data: bytes, delimiter: str) -> list[str]:
-    """Parse CSV/TSV - same logic as Excel: find 'denumire' column or first text column."""
+def _parse_csv(data: bytes, delimiter: str) -> list[dict] | list[str]:
+    """Parse CSV/TSV - extracts product data with optional id/cod column."""
     import csv as csv_mod
     text = data.decode("utf-8-sig", errors="replace")
-    # Auto-detect delimiter if comma doesn't produce multiple columns
     reader = list(csv_mod.reader(io.StringIO(text), delimiter=delimiter))
     if not reader:
         return []
@@ -5148,14 +5184,37 @@ def _parse_csv(data: bytes, delimiter: str) -> list[str]:
         reader = list(csv_mod.reader(io.StringIO(text), delimiter=";"))
 
     header = [str(c).lower().strip() for c in reader[0]] if reader else []
-    target_col = None
+
+    # Find name column
+    name_col = None
     for keyword in ["denumire", "produs", "product", "name", "nume", "descriere", "description", "item"]:
         if keyword in header:
-            target_col = header.index(keyword)
+            name_col = header.index(keyword)
             break
 
-    if target_col is not None:
-        return [row[target_col].strip() for row in reader[1:] if len(row) > target_col and row[target_col].strip()]
+    # Find ID column
+    id_col = None
+    for keyword in ["id", "cod", "code", "id_produs", "cod_produs", "product_id", "sku", "barcode"]:
+        if keyword in header:
+            id_col = header.index(keyword)
+            break
+
+    if name_col is not None and id_col is not None:
+        # Return dicts with id + denumire
+        results = []
+        for row in reader[1:]:
+            if len(row) <= name_col or not row[name_col].strip():
+                continue
+            denumire = row[name_col].strip()
+            prod_id = row[id_col].strip() if len(row) > id_col else ""
+            if prod_id.endswith(".0"):
+                prod_id = prod_id[:-2]
+            results.append({"id": prod_id, "denumire": denumire})
+        return results
+
+    if name_col is not None:
+        return [row[name_col].strip() for row in reader[1:]
+                if len(row) > name_col and row[name_col].strip()]
 
     # Fallback: first column with longest average text
     if reader:
@@ -5168,7 +5227,8 @@ def _parse_csv(data: bytes, delimiter: str) -> list[str]:
             if avg > best_avg:
                 best_avg = avg
                 best_col = ci
-        return [row[best_col].strip() for row in reader[1:] if len(row) > best_col and row[best_col].strip()]
+        return [row[best_col].strip() for row in reader[1:]
+                if len(row) > best_col and row[best_col].strip()]
 
     return []
 
@@ -5280,8 +5340,8 @@ def get_config():
 def save_config():
     """Save config values to config.json."""
     data = request.json or {}
-    # Only save non-empty keys
-    to_save = {k: v for k, v in data.items() if v}
+    # Only save non-empty keys (but keep booleans even if False)
+    to_save = {k: v for k, v in data.items() if v or isinstance(v, bool)}
     _save_config_file(to_save)
     return jsonify({"ok": True})
 
@@ -5298,10 +5358,18 @@ def upload_file():
 
     try:
         products = parse_uploaded_file(f)
+        # Normalize: if parser returned list of strings, wrap in dicts
+        if products and isinstance(products[0], str):
+            products_out = [{"denumire": p} for p in products]
+            has_ids = False
+        else:
+            products_out = products
+            has_ids = any(p.get("id") for p in products_out)
         return jsonify({
-            "products": products,
-            "count": len(products),
+            "products": products_out,
+            "count": len(products_out),
             "filename": f.filename,
+            "has_ids": has_ids,
         })
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -5344,6 +5412,7 @@ def start_job():
         "queue": event_queue,
         "status": "running",
         "config": config,
+        "product_map": {},  # filename → {id, denumire} for Hermes naming at approve time
     }
 
     thread.start()
@@ -5417,11 +5486,108 @@ def download_zip(job_id):
     )
 
 
+def _create_hermes_copies(job_id: str, output_dir: Path, approved_filenames: list[str]):
+    """
+    Create Hermes-ready copies of approved images:
+    - Resize to max 800x800 pixels (maintain aspect ratio, white padding)
+    - Convert to JPEG
+    - Save to _hermes/ subdirectory with proper naming
+    - Also save to configurable hermes_output_dir if set in config
+
+    Naming: {ID_Produs}{}{comentariu_produs}#N.jpg
+    """
+    job = active_jobs.get(job_id, {})
+    product_map = job.get("product_map", {})
+    config = job.get("config", {})
+
+    hermes_dir = output_dir / "_hermes"
+    hermes_dir.mkdir(exist_ok=True)
+
+    # Optional: also copy to a configured Hermes path (local or network)
+    hermes_output_path = config.get("hermes_output_path", "").strip()
+    hermes_external_dir = None
+    if hermes_output_path:
+        try:
+            hermes_external_dir = Path(hermes_output_path)
+            hermes_external_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Cannot create Hermes output dir '{hermes_output_path}': {e}")
+            hermes_external_dir = None
+
+    hermes_files = []
+    for fname in approved_filenames:
+        src_file = output_dir / fname
+        if not src_file.exists():
+            continue
+
+        # Get product metadata
+        meta = product_map.get(fname, {})
+        prod_id = meta.get("id", "")
+        denumire = meta.get("denumire", "")
+
+        if not prod_id:
+            # No Hermes ID available — skip Hermes copy but log it
+            logger.info(f"Hermes skip: no product ID for {fname}")
+            continue
+
+        # Determine image number from filename (e.g. ...}#2.webp → 2)
+        num_match = re.search(r'#(\d+)', fname)
+        img_num = int(num_match.group(1)) if num_match else 1
+
+        # Build Hermes filename (always .jpg)
+        hermes_name = hermes_filename(prod_id, denumire, img_num, fmt="jpeg")
+
+        try:
+            # Open and resize to max 800x800
+            from PIL import Image
+            img_data = src_file.read_bytes()
+            img = Image.open(io.BytesIO(img_data))
+
+            # Convert to RGB (JPEG doesn't support alpha)
+            if img.mode in ("RGBA", "P", "LA"):
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                if img.mode == "P":
+                    img = img.convert("RGBA")
+                bg.paste(img, mask=img.split()[-1] if "A" in img.mode else None)
+                img = bg
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+
+            # Resize to fit within 800x800 maintaining aspect ratio
+            max_size = (800, 800)
+            img.thumbnail(max_size, Image.LANCZOS)
+
+            # Save as JPEG
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=92, optimize=True)
+            jpeg_data = buf.getvalue()
+
+            # Save to local _hermes dir
+            hermes_path = hermes_dir / hermes_name
+            hermes_path.write_bytes(jpeg_data)
+            hermes_files.append(hermes_name)
+
+            # Also save to external Hermes dir if configured
+            if hermes_external_dir:
+                try:
+                    (hermes_external_dir / hermes_name).write_bytes(jpeg_data)
+                except Exception as e:
+                    logger.warning(f"Failed to write to Hermes external dir: {e}")
+
+            logger.info(f"Hermes copy: {fname} → {hermes_name} ({img.size[0]}x{img.size[1]})")
+
+        except Exception as e:
+            logger.warning(f"Hermes copy failed for {fname}: {e}")
+
+    return hermes_files
+
+
 @app.route("/api/approve", methods=["POST"])
 def approve_images():
     """
     Approve selected images: move from _pending/ to output dir.
     Rejected images are deleted from _pending/.
+    Also creates Hermes-ready copies (800x800 JPEG) if product IDs are available.
     Body: { "job_id": "...", "approved": ["file1.jpg", "file2.jpg"] }
     """
     data = request.get_json()
@@ -5462,11 +5628,20 @@ def approve_images():
     except OSError:
         pass
 
+    # Create Hermes-ready copies (800x800 JPEG with proper naming) if enabled
+    job = active_jobs.get(job_id, {})
+    hermes_enabled = job.get("config", {}).get("hermes_enabled", False)
+    hermes_files = []
+    if hermes_enabled:
+        hermes_files = _create_hermes_copies(job_id, output_dir, moved)
+
     return jsonify({
         "ok": True,
         "moved": len(moved),
         "deleted": len(deleted),
         "files": moved,
+        "hermes_files": hermes_files,
+        "hermes_count": len(hermes_files),
     })
 
 

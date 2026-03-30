@@ -71,6 +71,7 @@ function updateLineCount() {
 function clearInput() {
   productInput.value = '';
   fileProducts = [];
+  fileHasIds = false;
   document.getElementById('fileBadge').style.display = 'none';
   document.getElementById('fileInput').value = '';
   updateLineCount();
@@ -122,12 +123,17 @@ async function handleFileSelect(file) {
       return;
     }
 
-    fileProducts = data.products;
+    fileProducts = data.products;        // list of {id, denumire} dicts or strings
+    fileHasIds = data.has_ids || false;   // whether Excel had id/cod column
+
+    const idInfo = data.has_ids ? ' (cu ID-uri)' : '';
     badge.innerHTML = `
-      <span class="file-info"><strong>${escapeHtml(file.name)}</strong> &mdash; ${data.count} produse</span>
+      <span class="file-info"><strong>${escapeHtml(file.name)}</strong> &mdash; ${data.count} produse${idInfo}</span>
       <button class="btn-remove" onclick="clearInput()" title="Elimină"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>`;
 
-    productInput.value = data.products.join('\n');
+    // Display denumire lines in the textarea for visual reference
+    const lines = data.products.map(p => typeof p === 'string' ? p : (p.denumire || ''));
+    productInput.value = lines.join('\n');
     updateLineCount();
   } catch (err) {
     badge.innerHTML = `
@@ -172,6 +178,8 @@ function getConfig() {
     min_aspect_ratio:   +document.getElementById('minAspectRatio').value,
     max_aspect_ratio:   +document.getElementById('maxAspectRatio').value,
     priority_sites:     prioritySites,
+    hermes_enabled:     document.getElementById('hermesEnabled')?.checked || false,
+    hermes_output_path: document.getElementById('hermesOutputPath')?.value?.trim() || '',
   };
 }
 

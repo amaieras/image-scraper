@@ -6,6 +6,7 @@ let eventSource = null;
 let stats = { total: 0, done: 0, success: 0, failed: 0, images: 0 };
 let activeTab = 'text';
 let fileProducts = [];
+let fileHasIds = false;
 let timerInterval = null;
 let timerStart = null;
 

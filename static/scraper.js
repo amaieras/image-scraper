@@ -30,8 +30,18 @@ async function startScraping() {
   const text = document.getElementById('productInput').value.trim();
   if (!text) { alert('Adaugă produse mai întâi!'); return; }
 
-  const lines = text.split('\n').filter(l => l.trim());
-  const products = lines.map((line, i) => ({ id: String(i + 1), denumire: line.trim() }));
+  let products;
+  if (fileProducts.length > 0 && fileHasIds) {
+    // File upload with id/cod column — pass dicts with original IDs
+    products = fileProducts.map((p, i) => ({
+      id: p.id || String(i + 1),
+      denumire: p.denumire || '',
+    }));
+  } else {
+    // Text input or file without IDs — auto-number
+    const lines = text.split('\n').filter(l => l.trim());
+    products = lines.map((line, i) => ({ id: String(i + 1), denumire: line.trim() }));
+  }
   const config = getConfig();
 
   // Reset UI + approval state
