@@ -6,6 +6,9 @@ on:
     tags:
       - 'v*'  # Auto-build on version tags (v1.0, v2.1, etc.)
 
+permissions:
+  contents: write  # Required to create GitHub Releases
+
 jobs:
   build:
     strategy:
