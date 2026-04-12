@@ -149,6 +149,90 @@ def run_pip_install(packages, label="dependencies"):
     return True
 
 
+def auto_install_python_windows():
+    """Download and install Python automatically on Windows."""
+    import tempfile
+    installer_url = "https://www.python.org/ftp/python/3.12.8/python-3.12.8-amd64.exe"
+    installer_path = os.path.join(tempfile.gettempdir(), "python-installer.exe")
+
+    print("  Python 3.10+ not found. Downloading installer...")
+    print(f"  URL: {installer_url}")
+    print()
+
+    # Download using PowerShell
+    ps_cmd = f"Invoke-WebRequest -Uri '{installer_url}' -OutFile '{installer_path}'"
+    result = subprocess.run(["powershell", "-Command", ps_cmd])
+    if result.returncode != 0 or not os.path.isfile(installer_path):
+        print("  ERROR: Failed to download Python installer.")
+        return None, None
+
+    print("  Running Python installer...")
+    print('  IMPORTANT: Check "Add python.exe to PATH" when prompted!')
+    print()
+
+    # Run installer — InstallAllUsers=0 (user only), PrependPath=1 (add to PATH)
+    subprocess.run([
+        installer_path,
+        "InstallAllUsers=0", "PrependPath=1", "Include_test=0"
+    ])
+
+    # Refresh PATH to pick up new Python
+    local_app = os.environ.get("LOCALAPPDATA", "")
+    for ver in ["Python312", "Python313", "Python311"]:
+        py_dir = os.path.join(local_app, "Programs", "Python", ver)
+        if os.path.isdir(py_dir):
+            os.environ["PATH"] = py_dir + ";" + os.path.join(py_dir, "Scripts") + ";" + os.environ["PATH"]
+
+    # Try finding Python again
+    return find_system_python()
+
+
+def auto_install_python_mac():
+    """Install Python via Homebrew on macOS."""
+    # Check if Homebrew is installed
+    brew_path = shutil.which("brew")
+    if not brew_path:
+        print("  Homebrew not found. Installing Homebrew first...")
+        result = subprocess.run(
+            ["/bin/bash", "-c",
+             'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'],
+        )
+        # Add brew to PATH for Apple Silicon
+        brew_paths = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+        for bp in brew_paths:
+            if os.path.isfile(bp):
+                brew_path = bp
+                os.environ["PATH"] = os.path.dirname(bp) + ":" + os.environ["PATH"]
+                break
+
+    if not brew_path:
+        print("  ERROR: Could not install Homebrew.")
+        return None, None
+
+    print("  Installing Python 3.12 via Homebrew...")
+    subprocess.run([brew_path, "install", "python@3.12"])
+
+    return find_system_python()
+
+
+def auto_install_python_linux():
+    """Install Python on Linux (Debian/Ubuntu/Fedora)."""
+    # Try apt (Debian/Ubuntu)
+    if shutil.which("apt-get"):
+        print("  Installing Python via apt...")
+        subprocess.run(["sudo", "apt-get", "update", "-y"])
+        subprocess.run(["sudo", "apt-get", "install", "-y", "python3", "python3-venv", "python3-pip"])
+        return find_system_python()
+
+    # Try dnf (Fedora)
+    if shutil.which("dnf"):
+        print("  Installing Python via dnf...")
+        subprocess.run(["sudo", "dnf", "install", "-y", "python3", "python3-pip"])
+        return find_system_python()
+
+    return None, None
+
+
 # ─── SETUP ───────────────────────────────────────────────────────────────────
 
 def setup():
@@ -190,22 +274,34 @@ def setup():
     python_path, python_ver = find_system_python()
     if not python_path:
         print()
-        print("  ERROR: Python 3.10+ not found!")
+        print("  Python 3.10+ not found. Attempting automatic install...")
         print()
+
         if IS_WIN:
-            print("  Please install Python from: https://www.python.org/downloads/")
-            print('  IMPORTANT: Check "Add python.exe to PATH" during installation!')
+            python_path, python_ver = auto_install_python_windows()
         elif IS_MAC:
-            print("  Install with Homebrew:")
-            print("    brew install python@3.12")
+            python_path, python_ver = auto_install_python_mac()
         else:
-            print("  Install with your package manager:")
-            print("    sudo apt install python3.12 python3.12-venv  (Ubuntu/Debian)")
-            print("    sudo dnf install python3.12  (Fedora)")
-        print()
-        print("  After installing Python, run this launcher again.")
-        input("\n  Press Enter to exit...")
-        return False
+            python_path, python_ver = auto_install_python_linux()
+
+        if not python_path:
+            print()
+            print("  ERROR: Automatic Python install failed.")
+            print()
+            if IS_WIN:
+                print("  Please install manually from: https://www.python.org/downloads/")
+                print('  IMPORTANT: Check "Add python.exe to PATH" during installation!')
+            elif IS_MAC:
+                print("  Please install manually:")
+                print("    brew install python@3.12")
+            else:
+                print("  Please install manually:")
+                print("    sudo apt install python3 python3-venv  (Ubuntu/Debian)")
+                print("    sudo dnf install python3  (Fedora)")
+            print()
+            print("  After installing Python, run this launcher again.")
+            input("\n  Press Enter to exit...")
+            return False
 
     print(f"  Found Python {python_ver} at {python_path}")
 
