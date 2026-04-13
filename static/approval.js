@@ -109,6 +109,17 @@ function hideApprovalToolbar() {
   }
 }
 
+function resetApprovalToolbar() {
+  const approveBtn = document.getElementById('approveBtn');
+  if (approveBtn) {
+    approveBtn.textContent = 'Aprobă Selecția';
+    approveBtn.disabled = false;
+    approveBtn.classList.remove('done');
+  }
+  const actions = document.getElementById('approvalActions');
+  if (actions) actions.classList.remove('hidden');
+}
+
 async function approveSelected() {
   if (!currentJobId || approvalDone) return;
 

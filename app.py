@@ -2189,6 +2189,7 @@ class DirectSiteScraper:
         # Extract volume/weight BEFORE cleaning (for slug suffix)
         vol_match = re.search(r'\b(\d+(?:[.,]\d+)?)\s*(l|ml|gr|g|kg|cl)\b', query, re.IGNORECASE)
         volume_suffix = ""
+        volume_alt_suffixes = []  # alternate formats: 0.7L → ["07l", "70cl"]
         if vol_match:
             vol_num = vol_match.group(1).replace(",", ".")
             vol_unit = vol_match.group(2).lower()
@@ -2196,6 +2197,20 @@ class DirectSiteScraper:
             if vol_unit == "gr":
                 vol_unit = "g"
             volume_suffix = f"{vol_num}{vol_unit}".replace(".0", "")
+            # Generate alternate volume formats for slugs
+            # 0.7L → "07l" (primary) + "70cl" (alternate)
+            # 0.5L → "05l" + "50cl"
+            try:
+                vol_float = float(vol_num)
+                if vol_unit == "l" and vol_float < 1.0:
+                    cl_val = int(vol_float * 100)
+                    volume_alt_suffixes.append(f"{cl_val}cl")
+                elif vol_unit == "cl":
+                    l_val = float(vol_num) / 100
+                    l_str = f"{l_val}".replace(".0", "").replace("0.", "0")
+                    volume_alt_suffixes.append(f"{l_str}l")
+            except ValueError:
+                pass
 
         # Extract parenthetical content BEFORE cleaning — used as alternate flavor names for slugs
         # "(Red Berries)" → "Red Berries", "(mere verzi)" → "mere verzi"
@@ -2259,6 +2274,49 @@ class DirectSiteScraper:
 
         words = cleaned.split()
 
+        # ── Compound flavor phrase detection ──────────────────────────
+        # Detect multi-word flavor phrases BEFORE word-by-word classification
+        # so "Fructe de Padure" is treated as a unit, not "fruit" + "forest"
+        _compound_flavors = {
+            "fructe de padure": {"slug_forms": ["fructe-de-padure", "forest-fruits", "wild-berries", "red-berries"],
+                                  "en": "forest fruits"},
+            "fructe padure":    {"slug_forms": ["fructe-de-padure", "forest-fruits", "wild-berries"],
+                                  "en": "forest fruits"},
+            "mere verzi":       {"slug_forms": ["green-apple", "mere-verzi"], "en": "green apple"},
+            "fructul pasiunii": {"slug_forms": ["passion-fruit", "fructul-pasiunii"], "en": "passion fruit"},
+            "fruct pasiune":    {"slug_forms": ["passion-fruit"], "en": "passion fruit"},
+            "ceai verde":       {"slug_forms": ["ceai-verde", "green-tea"], "en": "green tea"},
+            "ceai negru":       {"slug_forms": ["ceai-negru", "black-tea"], "en": "black tea"},
+        }
+        compound_flavor_found = []  # list of {"phrase", "slug_forms", "en"}
+        cleaned_for_words = cleaned.lower()
+        for phrase, info in _compound_flavors.items():
+            if phrase in cleaned_for_words:
+                compound_flavor_found.append({"phrase": phrase, **info})
+                # Remove compound words from text so they aren't classified individually
+                cleaned_for_words = cleaned_for_words.replace(phrase, " ", 1)
+        # Rebuild words list from the modified text (preserving original case for brand detection)
+        if compound_flavor_found:
+            # Build a set of words consumed by compound phrases
+            consumed_words = set()
+            for cf in compound_flavor_found:
+                for cw in cf["phrase"].split():
+                    consumed_words.add(cw)
+            words = [w for w in words if w.lower() not in consumed_words]
+
+        # ── English flavor/descriptor word recognition ────────────────
+        _en_flavor_words = {"apple", "cherry", "strawberry", "raspberry", "blueberry",
+                            "mango", "banana", "orange", "lemon", "lime", "peach",
+                            "pear", "coconut", "vanilla", "caramel", "chocolate",
+                            "mint", "ginger", "cinnamon", "berries", "berry",
+                            "watermelon", "pineapple", "grapefruit", "passion",
+                            "kiwi", "pomegranate", "fig", "plum", "apricot",
+                            "hazelnut", "almond", "walnut", "rose", "lavender",
+                            "honey", "cranberry", "elderflower", "hibiscus",
+                            "lychee", "guava", "papaya", "melon"}
+        _en_descriptor_words = {"green", "red", "black", "white", "wild", "dark",
+                                "light", "iced", "hot", "spicy", "sweet", "sour"}
+
         # Classify words: brand, product_type, flavor
         product_type_en = {"puree", "syrup", "tea", "coffee", "infusion", "juice",
                            "sauce", "cream", "jam", "compote", "butter", "honey",
@@ -2284,6 +2342,13 @@ class DirectSiteScraper:
                 type_words.append((w, en))
             elif en and en.lower() != lower:
                 flavor_words.append((w, en))
+            elif lower in _en_flavor_words:
+                # English flavor word (apple, cherry, berries, etc.)
+                flavor_words.append((w, lower))
+            elif lower in _en_descriptor_words:
+                # English descriptor (green, red) — keep as part of brand for slug identity
+                # e.g. "Green Apple" → brand_str includes "Green" for correct URL
+                brand_words.append(w)
             else:
                 brand_words.append(w)
 
@@ -2318,10 +2383,27 @@ class DirectSiteScraper:
         brand_str = " ".join(brand_words)
         t_forms = []
         for tw in type_words:
-            t_forms = _top_forms(tw[0], tw[1], limit=4)
+            t_forms.extend(_top_forms(tw[0], tw[1], limit=4))
+        # Deduplicate t_forms preserving order
+        t_forms = list(dict.fromkeys(t_forms))
+
         f_forms = []
         for fw in flavor_words:
-            f_forms = _top_forms(fw[0], fw[1], limit=4)
+            f_forms.extend(_top_forms(fw[0], fw[1], limit=4))
+        # Deduplicate f_forms preserving order
+        f_forms = list(dict.fromkeys(f_forms))
+
+        # Add compound flavor slug forms to f_forms (high priority — at front)
+        if compound_flavor_found:
+            compound_f_forms = []
+            for cf in compound_flavor_found:
+                for sf in cf["slug_forms"]:
+                    if sf not in compound_f_forms:
+                        compound_f_forms.append(sf)
+            # Compound forms first, then individual word forms
+            f_forms = compound_f_forms + [f for f in f_forms if f not in compound_f_forms]
+            print(f"[SLUG] Compound flavors detected: {[cf['phrase'] for cf in compound_flavor_found]}, "
+                  f"f_forms now: {f_forms[:8]}")
 
         # Variant 2b FIRST: brand-type (e.g. MONIN Green Apple + piure → monin-green-apple-piure)
         # This is the MOST COMMON e-commerce URL pattern, so try it first.
@@ -2405,9 +2487,10 @@ class DirectSiteScraper:
                 for ff in f_forms[:2]:  # Limit to top 2 flavor forms
                     # With volume first (most specific): monin-cherry-piure-de-fructe-1l
                     if volume_suffix:
-                        sv = make_slug(f"{brand_str} {ff} {exp} {volume_suffix}")
-                        if sv and sv not in expansion_slugs:
-                            expansion_slugs.append(sv)
+                        for vf in [volume_suffix] + volume_alt_suffixes:
+                            sv = make_slug(f"{brand_str} {ff} {exp} {vf}")
+                            if sv and sv not in expansion_slugs:
+                                expansion_slugs.append(sv)
                     # Without volume: monin-cherry-piure-de-fructe
                     s = make_slug(f"{brand_str} {ff} {exp}")
                     if s and s not in expansion_slugs:
@@ -2415,13 +2498,15 @@ class DirectSiteScraper:
         # Insert expansion slugs at the front (most likely to match)
         slugs = expansion_slugs + [s for s in slugs if s not in expansion_slugs]
 
-        # Variant 8: Add volume suffix to top basic slugs
+        # Variant 8: Add volume suffix to top basic slugs (+ alternate volume formats)
         if volume_suffix:
             vol_slugs = []
+            all_vol_formats = [volume_suffix] + volume_alt_suffixes
             for s in slugs[:8]:
-                sv = f"{s}-{make_slug(volume_suffix)}"
-                if sv not in slugs and sv not in vol_slugs:
-                    vol_slugs.append(sv)
+                for vf in all_vol_formats:
+                    sv = f"{s}-{make_slug(vf)}"
+                    if sv not in slugs and sv not in vol_slugs:
+                        vol_slugs.append(sv)
             slugs.extend(vol_slugs)
 
         # Variant 9: Condensed brand slugs
@@ -2583,9 +2668,93 @@ class DirectSiteScraper:
                     s = make_slug(f"{brand_str} {alt_flavor} {t_forms[0]} {volume_suffix}")
                     if s and s not in slugs and s not in paren_slugs:
                         paren_slugs.append(s)
+                # brand + alt_flavor + type_expansion + volume (e.g. monin-red-berries-piure-de-fructe-1l)
+                if type_words:
+                    en_type = type_words[0][1].lower()
+                    expansions = _type_expansions.get(en_type, [])
+                    for exp in expansions[:2]:
+                        if volume_suffix:
+                            s = make_slug(f"{brand_str} {alt_flavor} {exp} {volume_suffix}")
+                            if s and s not in slugs and s not in paren_slugs:
+                                paren_slugs.append(s)
+                        s = make_slug(f"{brand_str} {alt_flavor} {exp}")
+                        if s and s not in slugs and s not in paren_slugs:
+                            paren_slugs.append(s)
             # Insert near the front — these are high-value since they're explicit alternate names
             slugs = paren_slugs + slugs
             print(f"[SLUG] Added {len(paren_slugs)} paren-flavor slugs: {paren_slugs[:5]}")
+
+        # Variant 12: "Strip RO type prefix, condense brand, keep everything else" — HIGH PRIORITY
+        # Handles sites like beanzcafe.ro: "Ceai Tea Tales Blueberry Cream" → "teatales-blueberry-cream-4g"
+        # Logic: The FIRST word if it's a RO product type (ceai, sirop, piure, infuzie) is stripped.
+        # Then try condensing the first 2 remaining words (brand condensation).
+        # ALL other words are kept (even EN type-like words that are actually flavor names).
+        _ro_type_words = set()
+        for ro, en in _RO_EN_MAP.items():
+            if en.lower() in product_type_en:
+                _ro_type_words.add(ro)
+
+        smart_slugs = []
+        if len(_ordered_words) >= 3:
+            # Step 1: Strip leading RO type word(s)
+            rest_words = list(_ordered_words)
+            while rest_words and rest_words[0].lower() in _ro_type_words:
+                rest_words = rest_words[1:]
+
+            if len(rest_words) >= 2:
+                # Step 2: Try condensing first 2 words as brand
+                condensed_brand = rest_words[0].lower() + rest_words[1].lower()
+                remaining = rest_words[2:]
+                remaining_str = "-".join(w.lower() for w in remaining)
+
+                # Full slug: condensed + remaining + volume
+                parts = [condensed_brand]
+                if remaining_str:
+                    parts.append(remaining_str)
+                if volume_suffix:
+                    sv = make_slug("-".join(parts) + "-" + volume_suffix)
+                    if sv and sv not in smart_slugs:
+                        smart_slugs.append(sv)
+                sv = make_slug("-".join(parts))
+                if sv and sv not in smart_slugs:
+                    smart_slugs.append(sv)
+
+                # Also try without condensation: first-word-second-word-rest + volume
+                normal = make_slug(" ".join(rest_words))
+                if volume_suffix:
+                    sv = f"{normal}-{make_slug(volume_suffix)}"
+                    if sv and sv not in smart_slugs:
+                        smart_slugs.append(sv)
+                if normal and normal not in smart_slugs:
+                    smart_slugs.append(normal)
+
+        # Also: strip RO type + "looseleaf" alias for infuzie products
+        # "Ceai Tea Tales infuzie Cranberry" → "teatales-looseleaf-cranberry-250g"
+        if type_words and any(tw[1].lower() == "infusion" for tw in type_words):
+            rest_words = list(_ordered_words)
+            # Remove all RO type words (ceai, infuzie)
+            rest_words = [w for w in rest_words if w.lower() not in _ro_type_words]
+            # Remove descriptor words (verde, negru)
+            rest_words = [w for w in rest_words if w.lower() not in _slug_noise]
+            if len(rest_words) >= 2:
+                condensed_brand = rest_words[0].lower() + rest_words[1].lower()
+                remaining = rest_words[2:]
+                for alias in ["looseleaf", "infuzie"]:
+                    parts = [condensed_brand, alias]
+                    if remaining:
+                        parts.append("-".join(w.lower() for w in remaining))
+                    if volume_suffix:
+                        sv = make_slug("-".join(parts) + "-" + volume_suffix)
+                        if sv and sv not in smart_slugs:
+                            smart_slugs.append(sv)
+                    sv = make_slug("-".join(parts))
+                    if sv and sv not in smart_slugs:
+                        smart_slugs.append(sv)
+
+        if smart_slugs:
+            # Insert at front — these are very specific and likely to match
+            slugs = smart_slugs + [s for s in slugs if s not in smart_slugs]
+            print(f"[SLUG] Added {len(smart_slugs)} smart slugs: {smart_slugs[:5]}")
 
         # Limit total slugs to avoid too many HTTP requests
         slugs = slugs[:max_slugs]
@@ -2594,12 +2763,43 @@ class DirectSiteScraper:
         # URL suffixes to try (no prefix — product slugs are almost always at root)
         suffixes = ["", ".html"]  # CS-Cart, Magento often use .html
 
-        # Build all candidate URLs (slug × suffix)
+        # Category prefixes: some sites put products under /category/slug
+        # Discover from product type words (e.g. "ceai" → try /ceaiuri/, /ceai/)
+        _type_category_prefixes = {
+            "tea": ["ceaiuri", "ceai", "tea"],
+            "infusion": ["ceaiuri", "ceai", "infuzii", "tea"],
+            "coffee": ["cafea", "coffee"],
+            "syrup": ["siropuri", "sirop", "syrups"],
+            "puree": ["piureuri", "piure", "puree"],
+            "sauce": ["sosuri", "sos", "sauces"],
+            "juice": ["sucuri", "suc", "juices"],
+            "chocolate": ["ciocolata", "chocolate"],
+        }
+        category_prefixes = [""]  # Always try root (no prefix)
+        if type_words:
+            en_type = type_words[0][1].lower()
+            for prefix in _type_category_prefixes.get(en_type, []):
+                if prefix not in category_prefixes:
+                    category_prefixes.append(prefix)
+        # Also try "produse" and "products" as common generic prefixes
+        category_prefixes.extend(["produse", "products"])
+
+        # Build all candidate URLs
+        # Strategy: try ALL slugs at root first (highest probability),
+        # then top 5 slugs with category prefixes (for sites like /ceaiuri/slug)
         candidate_urls = []
+        # Root-level slugs first (most common pattern)
         for slug in slugs:
             for suffix in suffixes:
                 url = base_url.rstrip("/") + f"/{slug}" + suffix
                 candidate_urls.append((url, slug))
+        # Category-prefixed slugs for top candidates only (limit URL explosion)
+        if len(category_prefixes) > 1:  # Only if we have category prefixes beyond ""
+            for slug in slugs[:5]:  # Top 5 slugs only
+                for prefix in category_prefixes[1:]:  # Skip "" (already covered above)
+                    for suffix in suffixes:
+                        url = base_url.rstrip("/") + f"/{prefix}/{slug}" + suffix
+                        candidate_urls.append((url, slug))
 
         # --- PARALLEL slug probing with ThreadPoolExecutor ---
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -3867,8 +4067,11 @@ _RO_EN_MAP = {
     "lavanda": "lavender",
     "fructul": "fruit",
     "pasiunii": "passion",
-    "passion": "passion",
     "zmeura": "raspberry",
+    # Additional RO morphological forms
+    "verzi": "green",
+    "albe": "white",
+    "negre": "black",
 }
 
 # Synonyms across languages: EN keyword → [FR, DE, ES, IT, RO variants]
@@ -4029,6 +4232,31 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
         if en.lower() in product_type_en:
             product_type_ro.add(ro)
 
+    # ── Compound flavor phrase detection for search queries ──
+    # Detect known multi-word flavor phrases so they're kept as units
+    _search_compound_flavors = {
+        "fructe de padure": {"orig": "Fructe de Padure", "en": "forest fruits",
+                             "alt_queries": ["red berries", "wild berries"]},
+        "mere verzi": {"orig": "mere verzi", "en": "green apple", "alt_queries": []},
+        "fructul pasiunii": {"orig": "Fructul Pasiunii", "en": "passion fruit", "alt_queries": []},
+    }
+    compound_flavors_found = []
+    cleaned_lower = cleaned_name.lower()
+    consumed_compound_words = set()
+    for phrase, info in _search_compound_flavors.items():
+        if phrase in cleaned_lower:
+            compound_flavors_found.append(info)
+            for cw in phrase.split():
+                consumed_compound_words.add(cw)
+
+    # English flavor words to recognize
+    _en_flavor_words_search = {"apple", "cherry", "strawberry", "raspberry", "blueberry",
+                               "mango", "banana", "orange", "lemon", "lime", "peach",
+                               "pear", "coconut", "vanilla", "caramel", "chocolate",
+                               "mint", "ginger", "cinnamon", "berries", "berry",
+                               "watermelon", "pineapple", "grapefruit", "passion",
+                               "kiwi", "pomegranate", "fig", "plum", "apricot"}
+
     # Classify words into: brand, flavor, product_type
     brand_words = []
     flavor_words = []  # (original, en_translation)
@@ -4039,6 +4267,9 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
             continue
         if re.match(r'^[\d.]+$', w):
             continue
+        # Skip words already consumed by compound flavors
+        if lower in consumed_compound_words:
+            continue
         en = normalize_to_english(lower)
         if en and en.lower() != lower:
             # Translatable word — is it a product type or a flavor?
@@ -4046,8 +4277,14 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
                 type_words.append((w, en))
             else:
                 flavor_words.append((w, en))
+        elif lower in _en_flavor_words_search:
+            flavor_words.append((w, lower))
         else:
             brand_words.append(w)
+
+    # Add compound flavors as flavor entries
+    for cf in compound_flavors_found:
+        flavor_words.append((cf["orig"], cf["en"]))
 
     # === QUERY STRATEGIES (ordered by search-engine friendliness) ===
     # IMPORTANT: When a product type is present (pireu, sirop, ceai), include it
@@ -4123,7 +4360,14 @@ def build_direct_search_queries(cleaned_name: str, key_words: list[str]) -> list
                     queries.append(f"{' '.join(brand_words)} {variant}")
                 break
 
-    # Deduplicate while preserving order, cap at 3 queries for speed
+    # Strategy 9: Compound flavor alternate queries
+    # e.g. "Fructe de Padure" → also try "red berries", "wild berries"
+    if compound_flavors_found and brand_words:
+        for cf in compound_flavors_found:
+            for alt_q in cf.get("alt_queries", []):
+                queries.append(f"{' '.join(brand_words)} {alt_q}")
+
+    # Deduplicate while preserving order, cap at 6 queries for speed
     seen = set()
     unique = []
     for q in queries:
@@ -4161,13 +4405,25 @@ def clean_product_query(denumire: str) -> str:
         if re.match(r'^\d+[.,]?\d*\s*(gr|g|kg|ml|l|cl|oz)?\s*$', content, re.IGNORECASE):
             return ''
         # Check if content has Romanian words (translatable) — keep those
-        # "mere verzi" → both words in _RO_EN_MAP → keep
+        # "mere verzi" → both words in _RO_EN_MAP → keep (UNLESS main name has EN equivalent)
         # "Red Berries" → neither word in _RO_EN_MAP → remove (English translation)
         paren_words = re.findall(r'[a-zA-Z]{2,}', content)
         if paren_words:
             ro_count = sum(1 for w in paren_words if w.lower() in _RO_EN_MAP)
             # Keep only if majority of words are Romanian (translatable)
             if ro_count >= len(paren_words) * 0.5 and ro_count >= 1:
+                # BUT: check if the main name already contains the English equivalent
+                # e.g. "Green Apple (mere verzi)" → "mere"→"apple", main has "Apple" → skip
+                main_before_paren = cleaned[:cleaned.find('(')].lower() if '(' in cleaned else cleaned.lower()
+                main_words_set = set(main_before_paren.split())
+                en_translations = set()
+                for pw in paren_words:
+                    en = _RO_EN_MAP.get(pw.lower())
+                    if en:
+                        en_translations.add(en.lower())
+                # If ANY EN translation of paren words already appears in main name → redundant, remove
+                if en_translations & main_words_set:
+                    return ''  # Main name already has the English flavor name
                 return f' {content} '
         # Default: remove (English translations, unknown content)
         return ''
@@ -4287,7 +4543,7 @@ def hermes_filename(product_id: str, denumire: str, image_number: int,
                     fmt: str = "webp") -> str:
     comment = sanitize_comment(denumire)
     ext = {"webp": ".webp", "png": ".png", "jpeg": ".jpg"}.get(fmt.lower(), ".webp")
-    return str(product_id) + "}{" + comment + "}#" + str(image_number) + ext
+    return str(product_id) + "\\}\\{" + comment + "\\}#" + str(image_number) + ext
 
 
 # ─── SCRAPER JOB ──────────────────────────────────────────────────────────
@@ -4300,7 +4556,7 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Config
-    target_size = (config.get("image_width", 200), config.get("image_height", 200))
+    target_size = (config.get("image_width", 800), config.get("image_height", 800))
     quality = config.get("quality", 98)
     remove_bg = config.get("remove_background", False)
     output_format = config.get("output_format", "png")
@@ -4655,11 +4911,20 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
             url_score = url_keyword_score(score_url, denumire)
             url_score_100 = round(url_score * 100)
 
-            # TEXT-BASED TYPE CHECK: check URL, product_url AND title for type conflicts
+            # TEXT-BASED TYPE CHECK: check product_url and title for type conflicts
             # This works even without CLIP and catches cases like "sirop" in title
             # when product is "pireu"
-            text_sources_to_check = [url]
-            if url in img_to_product_url:
+            # NOTE: We do NOT check the image URL itself for priority site results,
+            # because image URLs often contain generic folder names (e.g. /sirop/, /products/)
+            # that cause false conflicts. Only check the product page URL and title.
+            text_sources_to_check = []
+            if is_priority and url in img_to_product_url:
+                # For priority sites: only check product URL and title (skip image URL)
+                text_sources_to_check.append(img_to_product_url[url])
+            elif not is_priority:
+                # For general search: check image URL too
+                text_sources_to_check.append(url)
+            if url in img_to_product_url and img_to_product_url[url] not in text_sources_to_check:
                 text_sources_to_check.append(img_to_product_url[url])
             if url in img_to_title:
                 text_sources_to_check.append(img_to_title[url])
@@ -5494,7 +5759,7 @@ def _create_hermes_copies(job_id: str, output_dir: Path, approved_filenames: lis
     - Save to _hermes/ subdirectory with proper naming
     - Also save to configurable hermes_output_dir if set in config
 
-    Naming: {ID_Produs}{}{comentariu_produs}#N.jpg
+    Naming: ID_Produs\}\{comentariu_produs\}#N.jpg
     """
     job = active_jobs.get(job_id, {})
     product_map = job.get("product_map", {})
@@ -5603,8 +5868,14 @@ def approve_images():
     moved = []
     deleted = []
 
+    logger.info(f"Approve request: job={job_id}, approved_files={approved_files}")
+
     # Process pending files (not yet approved)
     if pending_dir.exists():
+        disk_files = {f.name for f in pending_dir.iterdir() if f.is_file()}
+        logger.info(f"Pending dir files on disk: {disk_files}")
+        logger.info(f"Match check: disk vs approved intersection = {disk_files & approved_files}")
+
         for f in pending_dir.iterdir():
             if not f.is_file():
                 continue
@@ -5615,6 +5886,8 @@ def approve_images():
             else:
                 f.unlink()
                 deleted.append(f.name)
+    else:
+        logger.info(f"Pending dir does not exist: {pending_dir}")
 
     # Also count already-approved files that are still selected
     # (from previous approve rounds — they're already in output_dir)
@@ -5679,7 +5952,7 @@ def replace_image():
     # Get config from the job if available
     job = active_jobs.get(job_id, {})
     config = job.get("config", {})
-    target_size = (config.get("image_width", 200), config.get("image_height", 200))
+    target_size = (config.get("image_width", 800), config.get("image_height", 800))
     quality = config.get("quality", 95)
     output_format = config.get("output_format", "jpeg")
     remove_bg = config.get("remove_background", False)
@@ -5779,8 +6052,8 @@ def replace_image():
                 old_path2.unlink()
 
         # Generate new filename — count existing files for this product
-        # Filename format: product_id}{comment}#number.ext — so glob with }{ separator
-        glob_pattern = str(product_id) + "}{*"
+        # Filename format: product_id\}\{comment\}#number.ext — so glob with \}\{ separator
+        glob_pattern = str(product_id) + "\\}\\{*"
         existing = list(pending_dir.glob(glob_pattern)) + list(output_dir.glob(glob_pattern))
         img_num = len(existing) + 1
         filename = hermes_filename(product_id, denumire, img_num, fmt=output_format)

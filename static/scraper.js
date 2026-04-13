@@ -59,6 +59,7 @@ async function startScraping() {
   document.getElementById('stopBtn').innerHTML = '<i data-lucide="square" style="width:16px;height:16px;"></i> Oprește';
   document.getElementById('resetBtn').disabled = true;
   hideApprovalToolbar();
+  resetApprovalToolbar();
   if (typeof lucide !== 'undefined') lucide.createIcons();
   startTimer();
   updateStats();
@@ -108,7 +109,14 @@ function listenToEvents(jobId) {
   if (eventSource) eventSource.close();
   eventSource = new EventSource(`/api/stream/${jobId}`);
   eventSource.onmessage = (event) => handleEvent(JSON.parse(event.data));
-  eventSource.onerror = () => { eventSource.close(); resetBtn(); };
+  eventSource.onerror = () => {
+    eventSource.close();
+    resetBtn();
+    // Show approval toolbar if we have images (e.g. SSE dropped after stop)
+    if (Object.keys(pendingImages).length > 0 && !approvalDone) {
+      showApprovalToolbar();
+    }
+  };
 }
 
 function handleEvent(msg) {
@@ -167,13 +175,23 @@ function handleEvent(msg) {
       const duration = timerStart ? formatDuration(Date.now() - timerStart) : '';
       const avgTime = (timerStart && stats.total > 0)
         ? (((Date.now() - timerStart) / 1000) / stats.total).toFixed(1) + 's/product' : '';
-      document.getElementById('progressLabel').textContent =
-        `Finalizat! ${duration}` + (avgTime ? ` (${avgTime})` : '');
-      addLog('info', `Gata! ${data.stats?.images_saved || 0} imagini salvate în ${duration}. ${avgTime}`);
+      const wasCancelled = data.cancelled === true;
+      const pendingCount = Object.keys(pendingImages).length;
+
+      if (wasCancelled) {
+        document.getElementById('progressLabel').textContent =
+          `Oprit! ${duration}` + (avgTime ? ` (${avgTime})` : '');
+        addLog('info', `Oprit. ${pendingCount} imagini găsite, ${stats.done}/${stats.total} produse procesate.`);
+      } else {
+        document.getElementById('progressLabel').textContent =
+          `Finalizat! ${duration}` + (avgTime ? ` (${avgTime})` : '');
+        addLog('info', `Gata! ${pendingCount} imagini găsite în ${duration}. ${avgTime}`);
+      }
+
       resetBtn();
       document.getElementById('resetBtn').disabled = false;
       if (eventSource) eventSource.close();
-      if (Object.keys(pendingImages).length > 0) {
+      if (pendingCount > 0 && !approvalDone) {
         showApprovalToolbar();
       }
       break;
