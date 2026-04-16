@@ -35,7 +35,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "2.0.0"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
