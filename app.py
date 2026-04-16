@@ -35,6 +35,9 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
+APP_VERSION = "1.2.0"
+GITHUB_REPO = "amaieras/image-scraper"
+
 app = Flask(__name__)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # No caching for static files in dev
 logger = logging.getLogger("scraper-ui")
@@ -6085,6 +6088,156 @@ def list_jobs():
     })
 
 
+# ─── AUTO-UPDATE ──────────────────────────────────────────────────────────
+
+def _parse_version(v: str):
+    """Parse version string like '1.2.0' or 'v1.2.0' into tuple of ints."""
+    v = v.lstrip("v").strip()
+    parts = v.split(".")
+    return tuple(int(p) for p in parts if p.isdigit())
+
+
+@app.route("/api/version")
+def get_version():
+    """Return current app version."""
+    return jsonify({"version": APP_VERSION})
+
+
+@app.route("/api/check-update")
+def check_update():
+    """Check GitHub for a newer release."""
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=10,
+        )
+        if resp.status_code == 404:
+            return jsonify({"update_available": False, "current_version": APP_VERSION,
+                            "message": "No releases found"})
+        resp.raise_for_status()
+        data = resp.json()
+        latest_tag = data.get("tag_name", "")
+        latest_ver = _parse_version(latest_tag)
+        current_ver = _parse_version(APP_VERSION)
+        update_available = latest_ver > current_ver
+        return jsonify({
+            "update_available": update_available,
+            "current_version": APP_VERSION,
+            "latest_version": latest_tag.lstrip("v"),
+            "release_notes": data.get("body", ""),
+            "download_url": data.get("zipball_url", ""),
+            "html_url": data.get("html_url", ""),
+        })
+    except Exception as e:
+        logger.warning(f"Update check failed: {e}")
+        return jsonify({"update_available": False, "current_version": APP_VERSION,
+                        "error": str(e)}), 500
+
+
+@app.route("/api/update", methods=["POST"])
+def apply_update():
+    """Download latest release from GitHub and overwrite app files."""
+    import tempfile
+    import zipfile
+
+    try:
+        # 1. Get latest release info
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        zipball_url = data.get("zipball_url")
+        if not zipball_url:
+            return jsonify({"ok": False, "error": "No download URL in release"}), 400
+
+        # 2. Download the source ZIP
+        logger.info(f"Downloading update from {zipball_url}...")
+        dl = requests.get(zipball_url, timeout=120, stream=True)
+        dl.raise_for_status()
+
+        # 3. Extract to temp dir
+        app_dir = Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "release.zip"
+            with open(zip_path, "wb") as f:
+                for chunk in dl.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(tmp)
+
+            # GitHub zipball extracts to a folder like "user-repo-hash/"
+            extracted_dirs = [d for d in Path(tmp).iterdir() if d.is_dir()]
+            if not extracted_dirs:
+                return jsonify({"ok": False, "error": "Empty archive"}), 500
+            src = extracted_dirs[0]
+
+            # 4. Overwrite app files (preserve config.json by merging)
+            files_to_copy = ["app.py", "index.html", "requirements.txt"]
+            copied = []
+            for fname in files_to_copy:
+                src_file = src / fname
+                if src_file.exists():
+                    shutil.copy2(src_file, app_dir / fname)
+                    copied.append(fname)
+
+            # Copy static/ folder
+            src_static = src / "static"
+            if src_static.is_dir():
+                dst_static = app_dir / "static"
+                if dst_static.exists():
+                    shutil.rmtree(dst_static)
+                shutil.copytree(src_static, dst_static)
+                copied.append("static/")
+
+            # Copy deploy scripts
+            for script in ["deploy.sh", "deploy.bat", "deploy-linux.sh",
+                           "deploy-osx.sh", "deploy-windows.bat", "launcher.py"]:
+                src_file = src / script
+                if src_file.exists():
+                    shutil.copy2(src_file, app_dir / script)
+                    copied.append(script)
+
+            # Merge config.json (keep existing keys, add new ones)
+            src_config = src / "config.json"
+            if src_config.exists():
+                with open(src_config) as f:
+                    new_cfg = json.load(f)
+                existing_cfg = _load_config_file()
+                new_cfg.update(existing_cfg)  # existing values take priority
+                with open(app_dir / "config.json", "w") as f:
+                    json.dump(new_cfg, f, indent=2)
+                copied.append("config.json (merged)")
+
+        # 5. Install any new dependencies
+        import subprocess
+        import sys
+        pip_path = Path(sys.executable).parent / "pip"
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r",
+             str(app_dir / "requirements.txt")],
+            timeout=120,
+            capture_output=True,
+        )
+
+        new_ver = data.get("tag_name", "").lstrip("v")
+        logger.info(f"Update applied: v{APP_VERSION} -> v{new_ver}. Files: {copied}")
+        return jsonify({
+            "ok": True,
+            "updated_to": new_ver,
+            "files_updated": copied,
+            "message": "Update applied! Restart the app to use the new version.",
+        })
+
+    except Exception as e:
+        logger.error(f"Update failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -6095,5 +6248,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     print(f"\n  Image Scraper UI running at http://localhost:{args.port}")
-    print(f"  [v3.7] + context-aware cream + product line check on product_url + rescue search\n")
+    print(f"  [v{APP_VERSION}]\n")
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)

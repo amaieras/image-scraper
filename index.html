@@ -18,6 +18,16 @@
       <i data-lucide="sun" id="themeIconLight" style="display:none;"></i>
       <i data-lucide="moon" id="themeIconDark"></i>
     </button>
+    <span id="versionBadge" class="version-badge" title="Click to check for updates" onclick="checkForUpdate()" style="cursor:pointer;">
+      v<span id="versionText">...</span>
+    </span>
+  </div>
+
+  <!-- Update banner (hidden by default) -->
+  <div id="updateBanner" class="update-banner" style="display:none;">
+    <span id="updateMessage"></span>
+    <button onclick="applyUpdate()" id="updateBtn" class="update-btn">Update</button>
+    <button onclick="document.getElementById('updateBanner').style.display='none'" class="update-dismiss">&times;</button>
   </div>
   <div class="header">
     <div class="header-title">
@@ -347,12 +357,13 @@
   </div>
 </div>
 
-<script src="/static/state.js?v=14"></script>
-<script src="/static/ui.js?v=14"></script>
-<script src="/static/approval.js?v=14"></script>
-<script src="/static/replace.js?v=14"></script>
-<script src="/static/scraper.js?v=14"></script>
-<script src="/static/app.js?v=14"></script>
+<script src="/static/state.js?v=15"></script>
+<script src="/static/ui.js?v=15"></script>
+<script src="/static/approval.js?v=15"></script>
+<script src="/static/replace.js?v=15"></script>
+<script src="/static/scraper.js?v=15"></script>
+<script src="/static/app.js?v=15"></script>
+<script src="/static/update.js?v=15"></script>
 <script>lucide.createIcons();</script>
 <script>
 // Toggle Hermes path visibility + save config
