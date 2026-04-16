@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from typing import Optional
 """
 Image Scraper UI - Web interface for Hermes B2B Image Scraper
 =============================================================
@@ -1226,7 +1227,7 @@ Best matches (indices only):"""
         "crema aroma", "crema gusto",
     }
 
-    def _detect_product_type(self, text: str) -> str | None:
+    def _detect_product_type(self, text: str) -> Optional[str]:
         """Detect product type category from text. Returns type key or None.
         Context-aware: 'Blueberry Cream' is a flavor, not product type 'cream'.
         Also: 'Super Crema' / 'Crema e Aroma' are coffee product names, not cream.
@@ -3556,7 +3557,7 @@ class DirectSiteScraper:
 
         return url
 
-    def _make_absolute(self, url: str, base_url: str) -> str | None:
+    def _make_absolute(self, url: str, base_url: str) -> Optional[str]:
         """Convert relative URL to absolute."""
         if not url or url.startswith(('javascript:', 'mailto:', '#', 'data:')):
             return None
@@ -3619,7 +3620,7 @@ class DirectSiteScraper:
 
 # ─── IMAGE PROCESSING ────────────────────────────────────────────────────
 
-def download_image(url: str, timeout: int = 8) -> bytes | None:
+def download_image(url: str, timeout: int = 8) -> Optional[bytes]:
     try:
         resp = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
         resp.raise_for_status()
@@ -4186,7 +4187,7 @@ def words_match(word1: str, word2: str) -> bool:
     return word2.lower() in variants
 
 
-def normalize_to_english(word: str) -> str | None:
+def normalize_to_english(word: str) -> Optional[str]:
     """Get the English equivalent of a word, or None if not found.
     e.g. normalize_to_english("pireu") → "puree"
          normalize_to_english("banane") → "banana"
