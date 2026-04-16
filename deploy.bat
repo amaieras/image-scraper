@@ -51,14 +51,14 @@ if not exist "venv" (
 
 :: ── Install core dependencies ──
 echo.
-echo [1/4] Installing core dependencies...
+echo [1/4] Installing core dependencies from requirements.txt...
 venv\Scripts\python.exe -m pip install --upgrade pip --quiet
-venv\Scripts\python.exe -m pip install --quiet flask requests Pillow "numpy<2" ddgs openpyxl python-docx pymupdf
+venv\Scripts\python.exe -m pip install --quiet -r requirements.txt
 
 if %errorlevel% neq 0 (
     echo WARNING: Some core dependencies failed to install.
     echo Trying again without --quiet flag...
-    venv\Scripts\python.exe -m pip install flask requests Pillow "numpy<2" ddgs openpyxl python-docx pymupdf
+    venv\Scripts\python.exe -m pip install -r requirements.txt
 )
 
 :: ── Install AI dependencies (CLIP) ──

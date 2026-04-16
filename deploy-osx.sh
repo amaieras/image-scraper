@@ -120,12 +120,12 @@ install_deps() {
 
     $PIP install --upgrade pip --quiet 2>/dev/null
 
-    echo "  Core (Flask, Pillow, requests)..."
-    $PIP install --quiet flask requests Pillow "numpy<2" ddgs openpyxl python-docx pymupdf 2>/dev/null
+    echo "  Core dependencies from requirements.txt..."
+    $PIP install --quiet -r requirements.txt 2>/dev/null
 
     if [ $? -ne 0 ]; then
         echo "  Retrying without --quiet..."
-        $PIP install flask requests Pillow "numpy<2" ddgs openpyxl python-docx pymupdf
+        $PIP install -r requirements.txt
     fi
 
     echo "  AI (PyTorch, CLIP)..."

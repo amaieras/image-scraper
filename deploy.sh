@@ -48,15 +48,7 @@ source venv/bin/activate
 echo ""
 echo "Installing core dependencies..."
 pip install --quiet --upgrade pip
-pip install --quiet \
-    flask \
-    requests \
-    Pillow \
-    "numpy<2" \
-    ddgs \
-    openpyxl \
-    python-docx \
-    pymupdf
+pip install --quiet -r requirements.txt
 
 # ── Install AI dependencies (CLIP) ──
 echo ""

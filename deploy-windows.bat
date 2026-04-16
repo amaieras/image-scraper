@@ -112,13 +112,13 @@ echo.
 :: ── [3/5] Install dependencies ──
 echo [3/5] Installing Python dependencies...
 
-echo   Core (Flask, Pillow, requests)...
+echo   Core dependencies from requirements.txt...
 venv\Scripts\python.exe -m pip install --upgrade pip --quiet 2>nul
-venv\Scripts\python.exe -m pip install --quiet flask requests Pillow "numpy<2" ddgs openpyxl python-docx pymupdf 2>nul
+venv\Scripts\python.exe -m pip install --quiet -r requirements.txt 2>nul
 
 if %errorlevel% neq 0 (
     echo   Retrying without --quiet...
-    venv\Scripts\python.exe -m pip install flask requests Pillow "numpy<2" ddgs openpyxl python-docx pymupdf
+    venv\Scripts\python.exe -m pip install -r requirements.txt
 )
 
 echo   AI (PyTorch, CLIP) - this may take a few minutes (~500MB)...
