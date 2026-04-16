@@ -5760,7 +5760,7 @@ def _create_hermes_copies(job_id: str, output_dir: Path, approved_filenames: lis
     - Save to _hermes/ subdirectory with proper naming
     - Also save to configurable hermes_output_dir if set in config
 
-    Naming: ID_Produs\}\{comentariu_produs\}#N.jpg
+    Naming: ID_Produs}{comentariu_produs}#N.jpg
     """
     job = active_jobs.get(job_id, {})
     product_map = job.get("product_map", {})
