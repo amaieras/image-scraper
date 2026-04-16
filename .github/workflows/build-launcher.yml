@@ -19,9 +19,13 @@ jobs:
             binary: dist/ImageScraper.exe
             artifact: ImageScraper-windows
           - os: macos-latest
-            name: macos
+            name: macos-arm
             binary: dist/ImageScraper
-            artifact: ImageScraper-macos
+            artifact: ImageScraper-macos-arm
+          - os: macos-13
+            name: macos-intel
+            binary: dist/ImageScraper
+            artifact: ImageScraper-macos-intel
           - os: ubuntu-latest
             name: linux
             binary: dist/ImageScraper
@@ -69,7 +73,8 @@ jobs:
       - name: Create ZIP packages
         run: |
           cd ImageScraper-windows && zip -r ../ImageScraper-windows.zip . && cd ..
-          cd ImageScraper-macos && zip -r ../ImageScraper-macos.zip . && cd ..
+          cd ImageScraper-macos-arm && zip -r ../ImageScraper-macos-arm.zip . && cd ..
+          cd ImageScraper-macos-intel && zip -r ../ImageScraper-macos-intel.zip . && cd ..
           cd ImageScraper-linux && zip -r ../ImageScraper-linux.zip . && cd ..
 
       - name: Create GitHub Release
@@ -77,6 +82,7 @@ jobs:
         with:
           files: |
             ImageScraper-windows.zip
-            ImageScraper-macos.zip
+            ImageScraper-macos-arm.zip
+            ImageScraper-macos-intel.zip
             ImageScraper-linux.zip
           generate_release_notes: true
