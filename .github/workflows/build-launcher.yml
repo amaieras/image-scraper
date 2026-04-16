@@ -43,25 +43,6 @@ jobs:
       - name: Build binary
         run: python build-launcher.py
 
-      # macOS: create universal2 binary (ARM + Intel in one file)
-      - name: Make macOS universal binary
-        if: runner.os == 'macOS'
-        run: |
-          pip install lipo
-          # Rename ARM binary, rebuild for x86_64, then merge
-          mv dist/ImageScraper dist/ImageScraper-arm64
-          python -m PyInstaller --onefile --name ImageScraper --console --noconfirm --clean --target-architecture x86_64 launcher.py || true
-          if [ -f dist/ImageScraper ]; then
-            mv dist/ImageScraper dist/ImageScraper-x86_64
-            lipo -create dist/ImageScraper-arm64 dist/ImageScraper-x86_64 -output dist/ImageScraper
-            rm dist/ImageScraper-arm64 dist/ImageScraper-x86_64
-            echo "Universal binary created"
-            file dist/ImageScraper
-          else
-            echo "x86_64 build failed, using ARM-only binary"
-            mv dist/ImageScraper-arm64 dist/ImageScraper
-          fi
-
       - name: Prepare distribution
         shell: bash
         run: |

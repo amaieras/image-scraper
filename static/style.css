@@ -570,6 +570,7 @@ select { cursor: pointer; }
   max-width: 800px; display: flex; align-items: center; gap: 12px;
   font-size: 13px; color: var(--text); animation: slideDown 0.3s ease;
 }
+.update-banner .update-dismiss { margin-left: auto; }
 .update-banner .update-btn {
   background: var(--success); color: #fff; border: none; border-radius: 6px;
   padding: 6px 16px; font-size: 12px; font-weight: 600; cursor: pointer;
