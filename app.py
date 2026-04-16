@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from typing import Optional
+from typing import Optional, Union
 """
 Image Scraper UI - Web interface for Hermes B2B Image Scraper
 =============================================================
@@ -1421,7 +1421,7 @@ class DirectSiteScraper:
 
     # Common e-commerce search URL patterns
     # Searchanise API keys cache: domain → api_key (or None if not found)
-    _searchanise_keys: dict[str, str | None] = {}
+    _searchanise_keys: dict = {}
     # Brand page cache: domain → {brand_pattern_url: (entries_list, effective_base)}
     _brand_page_cache: dict[str, dict] = {}
 
@@ -1438,7 +1438,7 @@ class DirectSiteScraper:
         "/?subcats=Y&pcode_from_q=Y&pshort=Y&pfull=Y&pname=Y&pkeywords=Y&search_performed=Y&cid=0&q={query}&dispatch=products.search",
     ]
 
-    def __init__(self, ai_matcher: AIProductMatcher | None = None):
+    def __init__(self, ai_matcher: Optional[AIProductMatcher] = None):
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": USER_AGENT,
@@ -5339,7 +5339,7 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
 
 # ─── FILE PARSERS ─────────────────────────────────────────────────────────
 
-def parse_uploaded_file(file_storage) -> list[dict] | list[str]:
+def parse_uploaded_file(file_storage) -> Union[list[dict], list[str]]:
     """
     Extract product data from uploaded file.
     Supports: .xlsx, .xls, .csv, .tsv, .txt, .docx, .pdf
@@ -5366,7 +5366,7 @@ def parse_uploaded_file(file_storage) -> list[dict] | list[str]:
         raise ValueError(f"Unsupported file type: {filename}")
 
 
-def _parse_excel(data: bytes) -> list[dict] | list[str]:
+def _parse_excel(data: bytes) -> Union[list[dict], list[str]]:
     """Parse .xlsx - extracts product data.
     If an 'id'/'cod' column exists alongside 'denumire', returns list of dicts.
     Otherwise returns list of product name strings (backward compatible).
@@ -5437,7 +5437,7 @@ def _parse_excel(data: bytes) -> list[dict] | list[str]:
         return [l for l in lines if l and l.lower() != "none"]
 
 
-def _parse_csv(data: bytes, delimiter: str) -> list[dict] | list[str]:
+def _parse_csv(data: bytes, delimiter: str) -> Union[list[dict], list[str]]:
     """Parse CSV/TSV - extracts product data with optional id/cod column."""
     import csv as csv_mod
     text = data.decode("utf-8-sig", errors="replace")
