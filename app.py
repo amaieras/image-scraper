@@ -6226,11 +6226,21 @@ def apply_update():
 
         new_ver = data.get("tag_name", "").lstrip("v")
         logger.info(f"Update applied: v{APP_VERSION} -> v{new_ver}. Files: {copied}")
+
+        # Schedule auto-restart after sending response
+        def _restart():
+            import sys
+            time.sleep(2)  # Let the response reach the client
+            logger.info("Restarting app after update...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        threading.Thread(target=_restart, daemon=True).start()
+
         return jsonify({
             "ok": True,
             "updated_to": new_ver,
             "files_updated": copied,
-            "message": "Update applied! Restart the app to use the new version.",
+            "message": "Update applied! App is restarting...",
         })
 
     except Exception as e:

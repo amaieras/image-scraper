@@ -404,9 +404,20 @@ def launch():
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, signal_handler)
 
-    # Wait for server process
+    # Wait for server process — restart automatically if it exits cleanly
     try:
-        server_process.wait()
+        while True:
+            exit_code = server_process.wait()
+            if exit_code != 0:
+                print(f"\n  Server exited with code {exit_code}.")
+                break
+            # Exit code 0 = normal restart (e.g. after auto-update)
+            print(f"\n  Restarting {APP_NAME}...")
+            server_process = subprocess.Popen(
+                [VENV_PYTHON, app_path, "--port", str(PORT)],
+                cwd=BASE_DIR,
+                env=env,
+            )
     except KeyboardInterrupt:
         signal_handler(None, None)
 

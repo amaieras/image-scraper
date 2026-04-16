@@ -44,7 +44,7 @@ function checkForUpdate() {
     });
 }
 
-/** Download & apply update from GitHub */
+/** Download & apply update from GitHub, then wait for restart */
 function applyUpdate() {
   const btn = document.getElementById('updateBtn');
   const msg = document.getElementById('updateMessage');
@@ -57,9 +57,9 @@ function applyUpdate() {
     .then(r => r.json())
     .then(data => {
       if (data.ok) {
-        msg.textContent = `Updated to v${data.updated_to}! Restart the app to apply.`;
-        btn.textContent = 'Done';
+        msg.textContent = `Updated to v${data.updated_to}! Restarting...`;
         btn.style.display = 'none';
+        waitForRestart();
       } else {
         msg.textContent = `Update failed: ${data.error}`;
         btn.textContent = 'Retry';
@@ -71,4 +71,24 @@ function applyUpdate() {
       btn.textContent = 'Retry';
       btn.disabled = false;
     });
+}
+
+/** Poll the server until it comes back after restart, then reload */
+function waitForRestart() {
+  const msg = document.getElementById('updateMessage');
+  let dots = 0;
+
+  const poll = setInterval(() => {
+    dots = (dots + 1) % 4;
+    msg.textContent = 'Restarting' + '.'.repeat(dots + 1);
+
+    fetch('/api/version', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(() => {
+        clearInterval(poll);
+        msg.textContent = 'Reloading...';
+        setTimeout(() => window.location.reload(true), 500);
+      })
+      .catch(() => {}); // Server still down, keep polling
+  }, 2000);
 }
