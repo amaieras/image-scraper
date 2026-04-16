@@ -9,8 +9,9 @@ document.addEventListener('DOMContentLoaded', () => {
     })
     .catch(() => {});
 
-  // Auto-check for updates after 5s
+  // Auto-check for updates after 5s, then every 30 minutes
   setTimeout(checkForUpdate, 5000);
+  setInterval(checkForUpdate, 30 * 60 * 1000);
 });
 
 /** Check GitHub for a newer release */
