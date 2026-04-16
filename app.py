@@ -35,7 +35,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -6230,9 +6230,15 @@ def apply_update():
         # Schedule auto-restart after sending response
         def _restart():
             import sys
-            time.sleep(2)  # Let the response reach the client
+            import subprocess
+            time.sleep(1)  # Let the response reach the client
             logger.info("Restarting app after update...")
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # Spawn new process that waits, then starts the server
+            subprocess.Popen(
+                [sys.executable, "-c",
+                 f"import time, os, sys; time.sleep(2); os.execv('{sys.executable}', {[sys.executable] + sys.argv})"],
+            )
+            os._exit(0)  # Kill current server immediately, freeing the port
 
         threading.Thread(target=_restart, daemon=True).start()
 
