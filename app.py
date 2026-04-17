@@ -35,7 +35,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.1.0"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -3979,7 +3979,7 @@ _NOISE_PATTERNS = [
     r'\(\d+\s*buc[/\\]?[a-z]*\)',        # (10buc/pac)
     r'\(\d+\s*[a-z]*\)',                 # (20capsule) etc.
     r'\b\d+[.,]\d+\s*(gr|g|kg|ml|l|cl)\b',  # 0.33l, 1.5kg (MUST be before simpler pattern)
-    r'\b\d+x\d+\s*(gr|g|kg|ml|l|cl)?\b',    # 6x330ml
+    r'\b\d+\s*x\s*\d+\s*(gr|g|kg|ml|l|cl)?\b',  # 6x330ml, 12 x 25 gr
     r'\b\d+\s*(gr|g|kg|ml|l|cl)\b',     # 4gr, 250g, 0.75l, 33cl
     r'\b\d+[.,]?\d*\s*$',               # Trailing numbers/decimals left over
     r'\b(mic|mare|mediu|mini)\b',        # Size words: mic=small, mare=large
@@ -4075,7 +4075,10 @@ _RO_EN_MAP = {
     # Additional RO morphological forms
     "verzi": "green",
     "albe": "white",
+    "alba": "white",
+    "alb": "white",
     "negre": "black",
+    "choco": "chocolate",
 }
 
 # Synonyms across languages: EN keyword → [FR, DE, ES, IT, RO variants]
@@ -4827,13 +4830,21 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                 break  # Have enough URLs to evaluate
 
         if not search_urls:
-            # Try last-resort Google/Bing search before giving up
-            send("status", {"message": f"🔍 No results from priority/general search, trying Google/Bing for '{denumire[:40]}'"})
-            last_resort_queries_nr = [denumire, clean_product_query(denumire)]
+            # Try last-resort search with progressively simpler queries
+            send("status", {"message": f"🔍 No results from priority/general search, trying broader search for '{denumire[:40]}'"})
+            lr_cleaned_nr = clean_product_query(denumire)
+            lr_words_nr = lr_cleaned_nr.split()
+            last_resort_queries_nr = [denumire, lr_cleaned_nr]
+            # Simpler variants: first 2 words, brand only + "product"
+            if len(lr_words_nr) > 2:
+                last_resort_queries_nr.append(" ".join(lr_words_nr[:2]))
+            if lr_words_nr:
+                last_resort_queries_nr.append(f"{lr_words_nr[0]} product photo")
+            last_resort_queries_nr.append(f"{lr_cleaned_nr} product")
             for lrq in dict.fromkeys(last_resort_queries_nr):
                 for sn, searcher in [("bing", bing_scraper), ("ddg", ddg)]:
                     try:
-                        lr = searcher.search(lrq, max_results=5)
+                        lr = searcher.search(lrq, max_results=8)
                         if lr:
                             collect(lr, f"lastresort:{sn}")
                             break
@@ -5233,16 +5244,36 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
 
         valid_candidates.sort(key=_sort_key, reverse=True)
 
-        # ── LAST RESORT: if no valid candidates, grab first decent Google/Bing image ──
+        # ── LAST RESORT: if no valid candidates, try progressively simpler queries ──
         if not valid_candidates:
-            send("status", {"message": f"🔍 Last resort: searching Google/Bing for '{denumire[:40]}'"})
-            last_resort_queries = [denumire, clean_product_query(denumire)]
-            for lrq in dict.fromkeys(last_resort_queries):
+            send("status", {"message": f"🔍 Last resort: searching for '{denumire[:40]}'"})
+            # Build progressively simpler queries
+            lr_cleaned = clean_product_query(denumire)
+            lr_words = lr_cleaned.split()
+            last_resort_queries = [denumire, lr_cleaned]
+            # Try just first 2 words (usually brand + product)
+            if len(lr_words) > 2:
+                last_resort_queries.append(" ".join(lr_words[:2]))
+            # Try brand + "product" suffix for better image results
+            if lr_words:
+                last_resort_queries.append(f"{lr_words[0]} product photo")
+            # Try full name + "product" for generic search
+            last_resort_queries.append(f"{lr_cleaned} product")
+            # Deduplicate while preserving order
+            seen_queries = set()
+            unique_lr_queries = []
+            for q in last_resort_queries:
+                if q not in seen_queries:
+                    seen_queries.add(q)
+                    unique_lr_queries.append(q)
+
+            print(f"[LAST-RESORT] Trying {len(unique_lr_queries)} query variants: {unique_lr_queries}")
+            for lrq in unique_lr_queries:
                 if valid_candidates:
                     break
                 for sn, searcher in [("bing", bing_scraper), ("ddg", ddg)]:
                     try:
-                        lr_results = searcher.search(lrq, max_results=5)
+                        lr_results = searcher.search(lrq, max_results=8)
                         if not lr_results:
                             continue
                         lr_urls = [r.get("image", "") for r in lr_results if r.get("image")]
@@ -5251,14 +5282,15 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                             lr_data = lr_downloaded.get(lr_url)
                             if not lr_data:
                                 continue
+                            # Relaxed quality check for last resort — accept smaller images
                             lr_qc = quality_checker.evaluate(lr_data)
-                            if not lr_qc["passed"]:
+                            if lr_qc["score"] < 20:
                                 continue
                             lr_hash = hashlib.md5(lr_data).hexdigest()
                             if lr_hash in seen_hashes:
                                 continue
-                            # Accept first image that passes quality — skip Gemini/CLIP for last resort
-                            print(f"[LAST-RESORT] Accepting first decent image from {sn}: {lr_url[:100]}")
+                            # Accept first image that passes — skip Gemini/CLIP for last resort
+                            print(f"[LAST-RESORT] Accepting image from {sn} query='{lrq}': {lr_url[:100]}")
                             send("status", {"message": f"🔍 Last resort: found image from {sn}"})
                             valid_candidates.append((lr_data, lr_qc, 50, lr_url, lr_hash, f"lastresort:{sn}"))
                             break
