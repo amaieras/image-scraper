@@ -29,6 +29,13 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+if os.name == 'nt':  # Windows only — fix SSL cert discovery issues
+    try:
+        import certifi
+        os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+        os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+    except ImportError:
+        pass
 from bs4 import BeautifulSoup
 from flask import Flask, Response, jsonify, request, send_from_directory
 from PIL import Image, ImageOps, ImageFilter
@@ -42,6 +49,18 @@ app = Flask(__name__)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0  # No caching for static files in dev
 logger = logging.getLogger("scraper-ui")
 logging.basicConfig(level=logging.INFO)
+
+# ─── NETWORK CHECK (helps diagnose Windows SSL issues) ────────────────
+def _check_network():
+    try:
+        r = requests.get("https://www.bing.com", timeout=10,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        logger.info(f"Network check OK (bing.com → {r.status_code})")
+    except Exception as e:
+        logger.warning(f"⚠️ NETWORK CHECK FAILED: {type(e).__name__}: {e}")
+        logger.warning("⚠️ Image search will likely fail. Check SSL certificates or firewall.")
+
+threading.Thread(target=_check_network, daemon=True).start()
 
 OUTPUT_DIR = Path("./output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -951,7 +970,7 @@ class BingImageScraper:
             self._last_call = time.time()
             resp.raise_for_status()
         except Exception as e:
-            logger.debug(f"Bing scrape error: {e}")
+            logger.warning(f"⚠️ Bing search failed: {type(e).__name__}: {e}")
             return []
 
         results = []
@@ -1012,7 +1031,7 @@ class DuckDuckGoSearch:
                 r["source"] = "ddg"
             return results
         except Exception as e:
-            logger.debug(f"DDG error: {e}")
+            logger.warning(f"⚠️ DuckDuckGo search failed: {type(e).__name__}: {e}")
             return []
 
 
@@ -1627,8 +1646,8 @@ class DirectSiteScraper:
                 resp = self.session.get(search_url, timeout=6)
                 if resp.status_code == 200:
                     return (pattern, resp)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"⚠️ Direct site request failed ({site}): {type(e).__name__}: {e}")
             return (pattern, None)
 
         sa_results_holder = [None]  # mutable container for thread result
@@ -3623,6 +3642,8 @@ class DirectSiteScraper:
 
 # ─── IMAGE PROCESSING ────────────────────────────────────────────────────
 
+_download_errors_logged = set()
+
 def download_image(url: str, timeout: int = 8) -> Optional[bytes]:
     try:
         resp = requests.get(url, timeout=timeout, headers={"User-Agent": USER_AGENT})
@@ -3633,7 +3654,11 @@ def download_image(url: str, timeout: int = 8) -> Optional[bytes]:
         if len(resp.content) < 2000:
             return None
         return resp.content
-    except Exception:
+    except Exception as e:
+        err_type = type(e).__name__
+        if err_type not in _download_errors_logged:
+            _download_errors_logged.add(err_type)
+            logger.warning(f"⚠️ Image download failed ({err_type}): {e}")
         return None
 
 

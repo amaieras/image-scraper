@@ -371,6 +371,20 @@ def launch():
     # Start server in subprocess
     env = os.environ.copy()
     env["PORT"] = str(PORT)
+
+    # Fix SSL certificates on Windows — ensure requests finds the cert bundle
+    if IS_WIN:
+        try:
+            result = subprocess.run(
+                [VENV_PYTHON, "-c", "import certifi; print(certifi.where())"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                cert_path = result.stdout.strip()
+                env.setdefault("SSL_CERT_FILE", cert_path)
+                env.setdefault("REQUESTS_CA_BUNDLE", cert_path)
+        except Exception:
+            pass
     server_process = subprocess.Popen(
         [VENV_PYTHON, app_path, "--port", str(PORT)],
         cwd=BASE_DIR,
