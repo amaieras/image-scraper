@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.1.6"
+APP_VERSION = "1.1.7"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -662,6 +662,8 @@ class RelevanceChecker:
         # Determine product category for targeted prompts
         is_tea = any(w in name_lower for w in ["ceai", "tea", "infuzie", "chai"])
         is_coffee = any(w in name_lower for w in ["cafea", "coffee"])
+        is_chocolate = any(w in name_lower for w in ["ciocolata", "chocolate", "choco", "cacao"])
+        is_drink = any(w in name_lower for w in ["calda", "hot", "cappuccino", "latte"])
         is_spice = any(w in name_lower for w in ["condiment", "mirodenie", "spice"])
 
         try:
@@ -677,6 +679,10 @@ class RelevanceChecker:
                 "loose raw ingredients in a bowl",
                 "bulk material without packaging",
                 "raw food ingredients scattered on surface",
+                "served food on a plate or in a cup",
+                "recipe photo of prepared food or drink",
+                "food photography with spoons and plates",
+                "a cup of hot drink beverage served",
             ]
 
             if is_tea:
@@ -696,6 +702,20 @@ class RelevanceChecker:
                 loose_prompts.extend([
                     "loose coffee beans on a table",
                     "ground coffee powder pile",
+                    "a cup of coffee served on a table",
+                ])
+
+            if is_chocolate or is_drink:
+                packaged_prompts.extend([
+                    "hot chocolate powder sachets in a box",
+                    "chocolate drink mix product packaging",
+                    "commercial chocolate product box with label",
+                ])
+                loose_prompts.extend([
+                    "hot chocolate drink served in a cup",
+                    "chocolate dessert in bowls on a table",
+                    "cups of cocoa with garnish food photography",
+                    "chocolate mousse or pudding in cups",
                 ])
 
             packaged_input = self.tokenizer(packaged_prompts)
@@ -5320,6 +5340,21 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
         send("status", {"message": f"Downloaded {len(downloaded)}/{len(all_urls)} images"})
 
         # ── EVALUATE: quality + CLIP, collect valid candidates ──
+        # Reject images from recipe/food blog domains (they show served food, not products)
+        _RECIPE_DOMAINS = {
+            "labucatarie.ro", "reteteculinare.ro", "bucataras.ro", "gustos.ro",
+            "culinar.ro", "rfrp.ro", "savoriurbane.com", "diva-online.ro",
+            "prajituria.ro", "bucatariaconsiliului.ro", "craftlog.com",
+            "jocookingrecipes.com", "allrecipes.com", "foodnetwork.com",
+            "bbcgoodfood.com", "epicurious.com", "simplyrecipes.com",
+            "recipetineats.com", "delish.com", "tasty.co", "bonappetit.com",
+            "seriouseats.com", "thekitchn.com", "smittenkitchen.com",
+            "cookpad.com", "yummly.com", "food52.com",
+            "shutterstock.com", "istockphoto.com", "gettyimages.com",
+            "depositphotos.com", "dreamstime.com", "123rf.com",
+            "pinterest.com", "flickr.com", "unsplash.com",
+        }
+
         # Track if priority sites returned anything — if not, relax general search filters
         has_priority_urls = any(s.startswith("direct:") for _, s in search_urls)
         saved_images = []
@@ -5331,6 +5366,24 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
             data = downloaded.get(url)
             if not data:
                 continue
+
+            # Skip images from recipe/stock photo domains (check subdomains too)
+            if not src.startswith("direct:"):
+                try:
+                    domains_to_check = [urlparse(url).netloc.replace("www.", "").lower()]
+                    product_url_d = img_to_product_url.get(url, "")
+                    if product_url_d:
+                        domains_to_check.append(urlparse(product_url_d).netloc.replace("www.", "").lower())
+                    is_blocked = any(
+                        check_d == d or check_d.endswith("." + d)
+                        for check_d in domains_to_check for d in _RECIPE_DOMAINS
+                    )
+                    if is_blocked:
+                        print(f"[DOMAIN-FILTER] Skipping recipe/stock domain: {domains_to_check}")
+                        continue
+                except Exception:
+                    pass
+
             candidates_tried += 1
 
             # Quality check — relaxed for priority site images
