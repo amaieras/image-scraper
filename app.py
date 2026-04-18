@@ -145,10 +145,35 @@ class ImageQualityChecker:
 
         # 4. Color diversity (simple check for placeholder/blank images)
         try:
-            small = img_copy.resize((50, 50)).convert("RGB")
+            # Composite onto white before analysis to handle all transparent image types
+            small = img_copy.resize((50, 50))
+            if small.mode in ("RGBA", "LA", "PA") or (small.mode == "P" and "transparency" in img_copy.info):
+                small = small.convert("RGBA")
+                bg = Image.new("RGB", small.size, (255, 255, 255))
+                bg.paste(small, mask=small.split()[3])
+                small = bg
+            else:
+                small = small.convert("RGB")
             colors = small.getcolors(maxcolors=2500) or []
             unique_colors = len(colors)
             result["details"]["unique_colors"] = unique_colors
+
+            # Hard reject: truly blank/placeholder images (nearly 100% one color, <10 unique)
+            # Very strict: only rejects images with almost zero visual content
+            import numpy as np
+            if unique_colors < 10:
+                pixels = np.array(small)
+                top_color = max(colors, key=lambda c: c[0])
+                top_rgb = np.array(top_color[1])
+                diffs = np.sqrt(np.sum((pixels.astype(float) - top_rgb) ** 2, axis=2))
+                dominant_ratio = np.mean(diffs < 15)  # very strict: within distance 15
+                result["details"]["dominant_color_ratio"] = round(dominant_ratio, 2)
+                if dominant_ratio > 0.98:
+                    result["reasons"].append(f"Blank/placeholder image ({dominant_ratio:.0%} single color, {unique_colors} colors)")
+                    result["score"] = 0
+                    result["passed"] = False
+                    return result
+
             if unique_colors < 20:
                 result["reasons"].append("Too uniform (possible placeholder)")
                 color_score = 10
@@ -1432,6 +1457,43 @@ Best matches (indices only):"""
         return [w for w in words if len(w) >= 2 and w not in noise]
 
 
+class RobotsChecker:
+    """Cache and check robots.txt for multiple domains."""
+
+    _cache: dict[str, Optional["urllib.robotparser.RobotFileParser"]] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def is_allowed(cls, url: str, user_agent: str = "*") -> bool:
+        """Check if URL is allowed by the site's robots.txt. Returns True if allowed or on error."""
+        import urllib.robotparser
+        import urllib.request
+        parsed = urlparse(url)
+        domain = f"{parsed.scheme}://{parsed.netloc}"
+
+        with cls._lock:
+            if domain not in cls._cache:
+                try:
+                    rp = urllib.robotparser.RobotFileParser()
+                    robots_url = f"{domain}/robots.txt"
+                    # Fetch with timeout to avoid hanging on slow sites
+                    req = urllib.request.Request(robots_url, headers={"User-Agent": user_agent})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        raw = resp.read().decode("utf-8", errors="ignore")
+                    rp.parse(raw.splitlines())
+                    cls._cache[domain] = rp
+                except Exception:
+                    cls._cache[domain] = None  # can't fetch → allow
+
+        rp = cls._cache[domain]
+        if rp is None:
+            return True
+        try:
+            return rp.can_fetch(user_agent, url)
+        except Exception:
+            return True
+
+
 class DirectSiteScraper:
     """
     Scrape product images directly from e-commerce sites.
@@ -1642,6 +1704,9 @@ class DirectSiteScraper:
             search_url = base_url.rstrip("/") + pattern.format(
                 query=requests.utils.quote(query)
             )
+            if not RobotsChecker.is_allowed(search_url, USER_AGENT):
+                logger.info(f"[ROBOTS] {domain} disallows {pattern.split('?')[0]}, skipping")
+                return (pattern, None)
             try:
                 resp = self.session.get(search_url, timeout=6)
                 if resp.status_code == 200:
