@@ -1494,6 +1494,253 @@ class RobotsChecker:
             return True
 
 
+class SitemapProductIndex:
+    """
+    Fetches and caches a site's sitemap, extracts product URLs + images.
+    Used as a fallback when site search doesn't find a product.
+    """
+
+    _cache: dict[str, list[dict]] = {}  # domain → [{url, slug, images, title}]
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_products(cls, domain: str) -> list[dict]:
+        """Get cached product index for domain. Fetches sitemap on first call."""
+        with cls._lock:
+            if domain in cls._cache:
+                return cls._cache[domain]
+
+        # Fetch outside lock to avoid blocking other domains
+        products = cls._fetch_sitemap(domain)
+        if products:  # only cache non-empty results to allow retry on transient errors
+            with cls._lock:
+                cls._cache[domain] = products
+        return products
+
+    @classmethod
+    def _fetch_sitemap(cls, domain: str) -> list[dict]:
+        """Fetch sitemap.xml, follow sitemap index, extract product URLs + images."""
+        import xml.etree.ElementTree as ET
+        products = []
+        base = f"https://{domain}"
+
+        try:
+            # Step 1: Fetch main sitemap (may be index or direct urlset)
+            resp = requests.get(f"{base}/sitemap.xml", timeout=10,
+                                headers={"User-Agent": USER_AGENT}, allow_redirects=True)
+            if resp.status_code != 200:
+                logger.info(f"[SITEMAP] {domain}: no sitemap.xml (status {resp.status_code})")
+                return []
+
+            import gzip
+
+            def _parse_sitemap_content(content):
+                """Parse sitemap content, handling gzip if needed."""
+                try:
+                    raw = gzip.decompress(content)
+                except Exception:
+                    raw = content
+                return ET.fromstring(raw)
+
+            def _find_elements(el, tag, namespaces):
+                """Find elements with or without namespace (some sitemaps omit it)."""
+                results = el.findall(f".//sm:{tag}", namespaces)
+                if not results:
+                    results = el.findall(f".//{tag}")
+                if not results:
+                    results = el.findall(f".//{{{namespaces['sm']}}}{tag}")
+                return results
+
+            root = _parse_sitemap_content(resp.content)
+            ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9",
+                  "img": "http://www.google.com/schemas/sitemap-image/1.1"}
+
+            # Check if sitemap index (contains <sitemap> entries)
+            sitemap_urls = []
+            for sitemap_el in _find_elements(root, "sitemap", ns):
+                loc_el = sitemap_el.find("sm:loc", ns)
+                if loc_el is None:
+                    loc_el = sitemap_el.find("loc")
+                if loc_el is not None and loc_el.text:
+                    sitemap_urls.append(loc_el.text.strip())
+
+            if not sitemap_urls:
+                # Direct urlset
+                all_roots = [root]
+            else:
+                # Fetch each sub-sitemap (handle .xml.gz)
+                all_roots = []
+                # Fetch sub-sitemaps in parallel (cap at 10, 5 workers)
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                def _fetch_sub(surl):
+                    try:
+                        sr = requests.get(surl, timeout=10,
+                                          headers={"User-Agent": USER_AGENT}, allow_redirects=True)
+                        if sr.status_code == 200:
+                            return _parse_sitemap_content(sr.content)
+                    except Exception:
+                        pass
+                    return None
+
+                with ThreadPoolExecutor(max_workers=5) as pool:
+                    futures = [pool.submit(_fetch_sub, s) for s in sitemap_urls[:10]]
+                    for f in as_completed(futures):
+                        r = f.result()
+                        if r is not None:
+                            all_roots.append(r)
+
+            # Step 2: Extract product URLs and images from all sitemaps
+            for sroot in all_roots:
+                for url_el in _find_elements(sroot, "url", ns):
+                    loc_el = url_el.find("sm:loc", ns)
+                    if loc_el is None:
+                        loc_el = url_el.find("loc")
+                    if loc_el is None or loc_el.text is None:
+                        continue
+                    loc = loc_el.text.strip()
+                    # Strip CDATA wrapper if present
+                    if loc.startswith("<![CDATA["):
+                        loc = loc[9:]
+                    if loc.endswith("]]>"):
+                        loc = loc[:-3]
+
+                    # Only product-like URLs (have .html, /products/, or multi-segment path)
+                    path = urlparse(loc).path
+                    if not (path.endswith(".html") or path.endswith(".htm")
+                            or "/products/" in path or "/product/" in path
+                            or path.count("/") >= 2):
+                        continue
+                    # Skip category/info pages
+                    if any(skip in path for skip in ["/contact", "/blog", "/info",
+                            "/content/", "/cele-mai-", "/pagina-", "/livrare",
+                            "/retur", "/termeni", "/confidentialitate"]):
+                        continue
+
+                    slug = path.rstrip("/").rsplit("/", 1)[-1]
+                    slug = slug.replace(".html", "").replace(".htm", "")
+
+                    # Extract images from sitemap (image:loc tags)
+                    images = []
+                    img_locs = url_el.findall(".//img:loc", ns)
+                    if not img_locs:
+                        img_locs = url_el.findall(".//{http://www.google.com/schemas/sitemap-image/1.1}loc")
+                    for img_el in img_locs:
+                        if img_el.text:
+                            img_url = img_el.text.strip()
+                            if img_url.startswith("<![CDATA["):
+                                img_url = img_url[9:]
+                            if img_url.endswith("]]>"):
+                                img_url = img_url[:-3]
+                            images.append(img_url)
+
+                    # Extract title from image:title if available
+                    title = ""
+                    title_el = url_el.find(".//img:title", ns)
+                    if title_el is None:
+                        title_el = url_el.find(".//{http://www.google.com/schemas/sitemap-image/1.1}title")
+                    if title_el is not None and title_el.text:
+                        title = title_el.text.strip()
+
+                    products.append({
+                        "url": loc,
+                        "slug": slug,
+                        "images": images,
+                        "title": title,
+                    })
+
+            logger.info(f"[SITEMAP] {domain}: indexed {len(products)} product URLs")
+
+        except Exception as e:
+            logger.warning(f"[SITEMAP] {domain}: failed to parse sitemap: {type(e).__name__}: {e}")
+
+        return products
+
+    @classmethod
+    def find_matches(cls, domain: str, product_name: str, max_results: int = 3) -> list[dict]:
+        """Find best matching products from sitemap index using token scoring."""
+        products = cls.get_products(domain)
+        if not products:
+            return []
+
+        # Tokenize the product name
+        name_lower = product_name.lower()
+        # Remove noise (sizes, packaging)
+        cleaned = re.sub(r'\d+\s*(g|gr|kg|ml|l|buc|plic|cut|plicuri|cutie|capsule)\b', '', name_lower)
+        cleaned = re.sub(r'[(/)]', ' ', cleaned)
+        tokens = [t for t in re.findall(r'[a-zA-ZăâîșțéèêëüöïôàáùúñçÀ-ÿ]+', cleaned)
+                  if len(t) >= 2 and t not in {"de", "cu", "si", "din", "la", "pt", "pentru",
+                                                "mic", "mare", "mediu", "mini", "new", "nou"}]
+
+        # Detect brand: first 1-2 ALL-CAPS or capitalized words that aren't generic terms
+        brand_tokens = []
+        generic = {"ciocolata", "calda", "cafea", "ceai", "alba", "clasic",
+                   "classic", "dark", "milk", "white", "choco", "new", "alune",
+                   "lapte", "coconut", "orange", "cinnamon", "hazelnut"}
+        for w in re.findall(r'[A-Z][A-Za-z]+', product_name):
+            wl = w.lower()
+            if wl not in generic and len(wl) >= 3:
+                brand_tokens.append(wl)
+                if len(brand_tokens) >= 2:
+                    break  # max 2 brand tokens
+
+        # RO→EN translations for slug matching
+        ro_en = {"ciocolata": "ciocolata", "calda": "calda", "cafea": "cafea",
+                 "ceai": "ceai", "lapte": "lapte", "alune": "alune",
+                 "padure": "padure", "portocale": "portocale", "scortisoara": "scortisoara",
+                 "cocos": "coconut", "capsuni": "strawberry", "afine": "blueberry",
+                 "cirese": "cherry", "mango": "mango", "vanilie": "vanilla",
+                 "caramel": "caramel", "alb": "white", "alba": "white",
+                 "negru": "dark", "neagra": "dark"}
+
+        # Expand tokens with EN variants
+        expanded = set(tokens)
+        for t in tokens:
+            if t in ro_en:
+                expanded.add(ro_en[t])
+
+        scored = []
+        for prod in products:
+            slug_text = prod["slug"].replace("-", " ").lower()
+            title_text = prod.get("title", "").lower()
+            match_text = f"{slug_text} {title_text}"
+
+            score = 0
+            matched_tokens = 0
+
+            # Brand match (mandatory for high score)
+            brand_matched = False
+            for bt in brand_tokens:
+                if bt in match_text:
+                    score += 10
+                    brand_matched = True
+                    matched_tokens += 1
+
+            if brand_tokens and not brand_matched:
+                continue  # brand not found → skip
+
+            # Token matching
+            for token in expanded:
+                if token in match_text:
+                    score += 5
+                    matched_tokens += 1
+
+            # Bonus for matching ratio
+            if tokens:
+                ratio = matched_tokens / len(tokens)
+                score += int(ratio * 10)
+
+            if score >= 12:
+                scored.append((score, prod))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        results = []
+        for score, prod in scored[:max_results]:
+            print(f"[SITEMAP] match score={score}: {prod['slug']} | images={len(prod['images'])}")
+            results.append(prod)
+        return results
+
+
 class DirectSiteScraper:
     """
     Scrape product images directly from e-commerce sites.
@@ -1956,6 +2203,46 @@ class DirectSiteScraper:
             except Exception as e:
                 logger.debug(f"Direct scrape error for {site}: {e}")
                 continue
+
+        # === SITEMAP FALLBACK: search sitemap index for matching product URLs ===
+        if not results:
+            try:
+                sitemap_matches = SitemapProductIndex.find_matches(
+                    domain, product_name or query, max_results=5)
+                for match in sitemap_matches:
+                    # Conflict check — skip wrong products
+                    pn = product_name or query
+                    if url_has_conflicting_product(match["url"], pn):
+                        print(f"[SITEMAP] {domain}: skipping conflicting match '{match['slug']}'")
+                        continue
+                    if match.get("title") and url_has_conflicting_product(match["title"], pn):
+                        print(f"[SITEMAP] {domain}: skipping conflicting title '{match['title'][:50]}'")
+                        continue
+                    if match["images"]:
+                        # Sitemap has images — use directly
+                        for img_url in match["images"][:max_results]:
+                            results.append({
+                                "image": img_url,
+                                "title": match.get("title", match["slug"]),
+                                "source": f"direct:{domain}",
+                                "product_url": match["url"],
+                            })
+                        print(f"[SITEMAP] {domain}: found {len(match['images'])} images from sitemap for '{match['slug']}'")
+                    else:
+                        # No images in sitemap — fetch product page
+                        images = self._extract_product_images(match["url"], base_url)
+                        for img_url in images[:max_results]:
+                            results.append({
+                                "image": img_url,
+                                "title": match.get("title", match["slug"]),
+                                "source": f"direct:{domain}",
+                                "product_url": match["url"],
+                            })
+                        print(f"[SITEMAP] {domain}: found {len(images)} images from page for '{match['slug']}'")
+                    if results:
+                        break  # got images from best match
+            except Exception as e:
+                logger.debug(f"[SITEMAP] {domain}: error: {e}")
 
         # If search found products but ALL were wrong type/conflicting, still try SLUG phase
         # but with reduced slug count to avoid delays (site might not carry this product at all)
