@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(checkForUpdate, 5 * 60 * 1000);
 });
 
-/** Check GitHub for a newer release */
+/** Check GitHub for a newer release and load version list */
 function checkForUpdate() {
   const badge = document.getElementById('versionBadge');
   const banner = document.getElementById('updateBanner');
@@ -34,10 +34,13 @@ function checkForUpdate() {
         badge.title = `Update available: v${data.latest_version}`;
         msg.textContent = `New version available: v${data.latest_version}`;
         banner.style.display = 'flex';
+        loadVersionList();
       } else {
         badge.classList.remove('has-update');
-        badge.title = `v${data.current_version} - up to date`;
-        banner.style.display = 'none';
+        badge.title = `v${data.current_version} - up to date (click for version list)`;
+        if (!_manualPickerOpen) {
+          banner.style.display = 'none';
+        }
       }
     })
     .catch(() => {
@@ -45,21 +48,73 @@ function checkForUpdate() {
     });
 }
 
+let _manualPickerOpen = false;
+
+/** Show version picker (click on version badge) */
+function showVersionPicker() {
+  const banner = document.getElementById('updateBanner');
+  const msg = document.getElementById('updateMessage');
+  _manualPickerOpen = true;
+  banner.style.display = 'flex';
+  msg.textContent = 'Select version:';
+  loadVersionList();
+  checkForUpdate();
+}
+
+/** Load available versions into the dropdown */
+function loadVersionList() {
+  const select = document.getElementById('versionSelect');
+  const previousValue = select.value;  // preserve user's selection
+
+  fetch('/api/versions')
+    .then(r => r.json())
+    .then(data => {
+      if (!data.versions || data.versions.length === 0) return;
+
+      select.innerHTML = '';
+      data.versions.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.version;
+        const label = v.current ? `v${v.version} (current)` : `v${v.version}`;
+        const date = v.date ? ` - ${v.date.split('T')[0]}` : '';
+        opt.textContent = label + date;
+        if (v.current) opt.disabled = true;
+        select.appendChild(opt);
+      });
+      // Restore previous selection if it still exists
+      if (previousValue) {
+        const exists = [...select.options].some(o => o.value === previousValue);
+        if (exists) select.value = previousValue;
+      }
+      select.style.display = 'inline-block';
+    })
+    .catch(() => {});
+}
+
 /** Download & apply update from GitHub, then wait for restart */
 function applyUpdate() {
   const btn = document.getElementById('updateBtn');
   const msg = document.getElementById('updateMessage');
+  const select = document.getElementById('versionSelect');
+  const selectedVersion = select.value || null;
 
   btn.disabled = true;
   btn.textContent = 'Updating...';
-  msg.textContent = 'Downloading update...';
+  msg.textContent = selectedVersion
+    ? `Downloading v${selectedVersion}...`
+    : 'Downloading latest update...';
 
-  fetch('/api/update', { method: 'POST' })
+  fetch('/api/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version: selectedVersion }),
+  })
     .then(r => r.json())
     .then(data => {
       if (data.ok) {
         msg.textContent = `Updated to v${data.updated_to}! Restarting...`;
         btn.style.display = 'none';
+        select.style.display = 'none';
         waitForRestart();
       } else {
         msg.textContent = `Update failed: ${data.error}`;

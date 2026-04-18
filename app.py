@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.1.4"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -5655,6 +5655,7 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                             continue
                         lr_urls = [r.get("image", "") for r in lr_results if r.get("image")]
                         lr_downloaded = download_images_parallel(lr_urls, max_workers=4)
+                        downloaded.update(lr_downloaded)  # merge for ultra-last-resort
                         for lr_url in lr_urls:
                             lr_data = lr_downloaded.get(lr_url)
                             if not lr_data:
@@ -5675,6 +5676,30 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                             break
                     except Exception as e:
                         logger.debug(f"Last resort search error ({sn}): {e}")
+
+        # ── ULTRA LAST RESORT: if STILL nothing, accept ANY image from search results ──
+        if not valid_candidates and (search_urls or downloaded):
+            send("status", {"message": f"⚠️ No good match — accepting best available image"})
+            print(f"[ULTRA-LAST-RESORT] Accepting any downloaded image for '{denumire[:40]}'")
+            # Try ALL downloaded images (main batch + last resort downloads)
+            for url_ulr, data_ulr in downloaded.items():
+                if not data_ulr or len(data_ulr) < 5000:
+                    continue
+                ulr_hash = hashlib.md5(data_ulr).hexdigest()
+                if ulr_hash in seen_hashes:
+                    continue
+                try:
+                    img_test = Image.open(io.BytesIO(data_ulr))
+                    w, h = img_test.size
+                    if w < 100 or h < 100:
+                        continue
+                except Exception:
+                    continue
+                print(f"[ULTRA-LAST-RESORT] Using {url_ulr[:100]} ({w}x{h})")
+                valid_candidates.append((data_ulr, {"score": 30, "details": {"resolution": f"{w}x{h}"},
+                                                     "passed": True, "reasons": []},
+                                         30, url_ulr, ulr_hash, "ultra-lastresort"))
+                break
 
         for data, qc, rel_score, url, img_hash, src in valid_candidates[:images_per_product]:
             try:
@@ -6544,19 +6569,61 @@ def check_update():
                         "error": str(e)}), 500
 
 
+@app.route("/api/versions")
+def list_versions():
+    """List available releases (up to 10)."""
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases",
+            headers={"Accept": "application/vnd.github.v3+json"},
+            timeout=10,
+            params={"per_page": 10},
+        )
+        resp.raise_for_status()
+        releases = resp.json()
+        versions = []
+        for r in releases:
+            if r.get("prerelease") or r.get("draft"):
+                continue
+            tag = r.get("tag_name", "")
+            ver = tag.lstrip("v")
+            versions.append({
+                "version": ver,
+                "tag": tag,
+                "date": r.get("published_at", ""),
+                "notes": r.get("body", ""),
+                "current": ver == APP_VERSION,
+            })
+        return jsonify({"current_version": APP_VERSION, "versions": versions})
+    except Exception as e:
+        logger.warning(f"Version list failed: {e}")
+        return jsonify({"current_version": APP_VERSION, "versions": [], "error": str(e)}), 500
+
+
 @app.route("/api/update", methods=["POST"])
 def apply_update():
-    """Download latest release from GitHub and overwrite app files."""
+    """Download a specific release (or latest) from GitHub and overwrite app files."""
     import tempfile
     import zipfile
 
     try:
-        # 1. Get latest release info
-        resp = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
-            headers={"Accept": "application/vnd.github.v3+json"},
-            timeout=10,
-        )
+        # 1. Get release info — specific version or latest
+        target_tag = request.json.get("version") if request.is_json else None
+        if target_tag:
+            # Ensure tag has 'v' prefix
+            if not target_tag.startswith("v"):
+                target_tag = f"v{target_tag}"
+            resp = requests.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{target_tag}",
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=10,
+            )
+        else:
+            resp = requests.get(
+                f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                headers={"Accept": "application/vnd.github.v3+json"},
+                timeout=10,
+            )
         resp.raise_for_status()
         data = resp.json()
         zipball_url = data.get("zipball_url")

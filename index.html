@@ -18,7 +18,7 @@
       <i data-lucide="sun" id="themeIconLight" style="display:none;"></i>
       <i data-lucide="moon" id="themeIconDark"></i>
     </button>
-    <span id="versionBadge" class="version-badge" title="Click to check for updates" onclick="checkForUpdate()" style="cursor:pointer;">
+    <span id="versionBadge" class="version-badge" title="Click to check for updates" onclick="showVersionPicker()" style="cursor:pointer;">
       v<span id="versionText">...</span>
     </span>
   </div>
@@ -34,6 +34,7 @@
   <!-- Update banner (hidden by default) -->
   <div id="updateBanner" class="update-banner" style="display:none;">
     <span id="updateMessage"></span>
+    <select id="versionSelect" style="display:none; margin: 0 8px; padding: 4px 8px; border-radius: 4px; background: #1a1a2e; color: #fff; border: 1px solid #444;"></select>
     <button onclick="applyUpdate()" id="updateBtn" class="update-btn">Update</button>
     <button onclick="document.getElementById('updateBanner').style.display='none'" class="update-dismiss">&times;</button>
   </div>
