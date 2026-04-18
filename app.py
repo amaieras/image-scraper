@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -731,6 +731,77 @@ class RelevanceChecker:
         except Exception as e:
             logger.warning(f"CLIP packaging check error: {e}")
             return {"ok": True, "reason": f"Packaging check error: {e}"}
+
+
+def local_packaging_text_check(data: bytes) -> dict:
+    """
+    Local heuristic: does the image show a packaged product with visible text?
+    Uses edge analysis + flat region detection + text-band structure.
+    No API needed — Pillow + numpy only.
+    Returns {ok: bool|None, score: float, reason: str, details: dict}
+    """
+    import numpy as np
+    try:
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img_resized = img.resize((200, 200))
+        arr = np.array(img_resized, dtype=float)
+        gray = np.mean(arr, axis=2)
+
+        # 1. Edge density: packaged products have structured edges
+        gx = np.abs(np.diff(gray, axis=1))
+        gy = np.abs(np.diff(gray, axis=0))
+        edge_strength = (np.mean(gx) + np.mean(gy)) / 2
+        edge_score = min(1.0, edge_strength / 25)
+
+        # 2. Flat region ratio: packaging has large uniform printed areas
+        block_size = 10
+        flat_blocks = 0
+        total_blocks = 0
+        for y in range(0, 200 - block_size, block_size):
+            for x in range(0, 200 - block_size, block_size):
+                block = gray[y:y+block_size, x:x+block_size]
+                if block.std() < 12:
+                    flat_blocks += 1
+                total_blocks += 1
+        flat_ratio = flat_blocks / max(total_blocks, 1)
+        flat_score = min(1.0, flat_ratio / 0.35)
+
+        # 3. Text-band detection: rows with high horizontal edge density
+        row_edge_means = np.mean(gx, axis=1)
+        threshold = np.mean(row_edge_means) + np.std(row_edge_means)
+        text_rows = np.sum(row_edge_means > threshold)
+        text_band_ratio = text_rows / len(row_edge_means)
+        text_score = min(1.0, text_band_ratio / 0.15)
+
+        # 4. Straight line detection
+        strong_h_lines = np.sum(np.max(gy, axis=1) > 40)
+        strong_v_lines = np.sum(np.max(gx, axis=0) > 40)
+        line_ratio = (strong_h_lines + strong_v_lines) / 400
+        line_score = min(1.0, line_ratio / 0.3)
+
+        # Composite score
+        composite = (text_score * 0.40 + edge_score * 0.25 +
+                     flat_score * 0.20 + line_score * 0.15)
+
+        details = {
+            "edge": round(edge_score, 2), "flat": round(flat_score, 2),
+            "text_band": round(text_score, 2), "lines": round(line_score, 2),
+            "composite": round(composite, 2),
+        }
+
+        if composite >= 0.50:
+            return {"ok": True, "score": composite, "reason": "Likely packaged product",
+                    "details": details}
+        elif composite < 0.30:
+            return {"ok": False, "score": composite,
+                    "reason": f"Generic/unpackaged image (score {composite:.2f})",
+                    "details": details}
+        else:
+            return {"ok": None, "score": composite,
+                    "reason": f"Uncertain packaging (score {composite:.2f})",
+                    "details": details}
+    except Exception as e:
+        return {"ok": None, "score": 0, "reason": f"Check error: {e}"}
 
 
 # Global instance (lazy loaded)
@@ -5544,6 +5615,12 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                     if clip_score is not None and clip_score < 0.22:
                         fallback_ok = False
                         fallback_reasons.append(f"Low CLIP score {clip_score:.2f} (local fallback)")
+                    # Local packaging/text check when Gemini unavailable
+                    if not is_priority:
+                        pkg_check = local_packaging_text_check(data)
+                        if pkg_check["ok"] is False:
+                            fallback_ok = False
+                            fallback_reasons.append(f"No packaging/text ({pkg_check['reason']})")
                     if not fallback_ok:
                         send("candidate_checked", {
                             "index": idx, "url": url[:100],
@@ -5566,6 +5643,21 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                                     "vision_text": v_text},
                         "relevance_score": relevance_score,
                     })
+                    continue
+
+            # Local packaging check when no Gemini — reject generic images
+            if not gemini_key and not is_priority:
+                pkg_check = local_packaging_text_check(data)
+                if pkg_check["ok"] is False:
+                    send("candidate_checked", {
+                        "index": idx, "url": url[:100],
+                        "quality_score": qc["score"], "passed": False,
+                        "reasons": [f"No packaging/text: {pkg_check['reason']}"],
+                        "details": {**qc["details"], "url_match": url_score_100, "clip": clip_score,
+                                    "packaging_local": pkg_check.get("details", {})},
+                        "relevance_score": relevance_score,
+                    })
+                    print(f"[PACKAGING-LOCAL] Rejected {url[:80]} — {pkg_check['reason']}")
                     continue
 
             send("candidate_checked", {

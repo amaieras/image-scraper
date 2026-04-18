@@ -79,6 +79,15 @@
           <span id="lineCount">0 products</span>
           <button class="btn btn-sm btn-ghost" onclick="clearInput()">Șterge</button>
         </div>
+
+        <!-- Start / Stop / Reset Buttons -->
+        <button id="startBtn2" class="btn btn-primary" onclick="startScraping()" style="margin-top:10px;">
+          <i data-lucide="play" style="width:16px;height:16px;"></i> Pornește Căutarea
+        </button>
+        <button id="stopBtn2" class="btn btn-primary" onclick="stopScraping()"
+          style="display:none;background:var(--danger);margin-top:8px;">
+          <i data-lucide="square" style="width:16px;height:16px;"></i> Oprește
+        </button>
       </div>
 
       <!-- Progress -->
@@ -359,13 +368,13 @@
   </div>
 </div>
 
-<script src="/static/state.js?v=15"></script>
-<script src="/static/ui.js?v=15"></script>
-<script src="/static/approval.js?v=15"></script>
-<script src="/static/replace.js?v=15"></script>
-<script src="/static/scraper.js?v=15"></script>
-<script src="/static/app.js?v=15"></script>
-<script src="/static/update.js?v=15"></script>
+<script src="/static/state.js?v=16"></script>
+<script src="/static/ui.js?v=16"></script>
+<script src="/static/approval.js?v=16"></script>
+<script src="/static/replace.js?v=16"></script>
+<script src="/static/scraper.js?v=16"></script>
+<script src="/static/app.js?v=16"></script>
+<script src="/static/update.js?v=16"></script>
 <script>lucide.createIcons();</script>
 <script>
 // Toggle Hermes path visibility + save config

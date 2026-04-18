@@ -57,6 +57,11 @@ async function startScraping() {
   document.getElementById('stopBtn').style.display = 'block';
   document.getElementById('stopBtn').disabled = false;
   document.getElementById('stopBtn').innerHTML = '<i data-lucide="square" style="width:16px;height:16px;"></i> Oprește';
+  // Sync duplicate buttons under product input
+  const sb2 = document.getElementById('startBtn2');
+  const ob2 = document.getElementById('stopBtn2');
+  if (sb2) { sb2.disabled = true; sb2.style.display = 'none'; }
+  if (ob2) { ob2.style.display = 'block'; }
   document.getElementById('resetBtn').disabled = true;
   hideApprovalToolbar();
   resetApprovalToolbar();
@@ -87,6 +92,11 @@ function resetBtn() {
   if (typeof lucide !== 'undefined') lucide.createIcons();
   document.getElementById('startBtn').style.display = 'block';
   document.getElementById('stopBtn').style.display = 'none';
+  // Sync duplicate buttons
+  const sb2 = document.getElementById('startBtn2');
+  const ob2 = document.getElementById('stopBtn2');
+  if (sb2) { sb2.disabled = false; sb2.style.display = 'block'; }
+  if (ob2) { ob2.style.display = 'none'; }
   document.getElementById('resetBtn').disabled = false;
   stopTimer();
 }
