@@ -72,24 +72,21 @@ function loadVersionList() {
       if (!data.versions || data.versions.length === 0) return;
 
       select.innerHTML = '';
+      let currentVersion = null;
       data.versions.forEach(v => {
         const opt = document.createElement('option');
         opt.value = v.version;
-        const label = v.current ? `v${v.version} (current)` : `v${v.version}`;
+        const label = v.current ? `✓ v${v.version} (current)` : `v${v.version}`;
         const date = v.date ? ` - ${v.date.split('T')[0]}` : '';
         opt.textContent = label + date;
-        if (v.current) {
-          opt.selected = true;
-        }
+        if (v.current) currentVersion = v.version;
         select.appendChild(opt);
       });
-      // Restore previous selection, or select first non-current version
-      if (previousValue) {
-        const exists = [...select.options].some(o => o.value === previousValue);
-        if (exists) select.value = previousValue;
-      } else {
-        const firstAvailable = [...select.options].find(o => !o.textContent.includes('(current)'));
-        if (firstAvailable) select.value = firstAvailable.value;
+      // Set selection: previous choice > current version
+      if (previousValue && [...select.options].some(o => o.value === previousValue)) {
+        select.value = previousValue;
+      } else if (currentVersion) {
+        select.value = currentVersion;
       }
       select.style.display = 'inline-block';
     })
