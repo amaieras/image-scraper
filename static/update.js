@@ -79,17 +79,16 @@ function loadVersionList() {
         const date = v.date ? ` - ${v.date.split('T')[0]}` : '';
         opt.textContent = label + date;
         if (v.current) {
-          opt.disabled = true;
           opt.selected = true;
         }
         select.appendChild(opt);
       });
       // Restore previous selection, or select first non-current version
       if (previousValue) {
-        const exists = [...select.options].some(o => o.value === previousValue && !o.disabled);
+        const exists = [...select.options].some(o => o.value === previousValue);
         if (exists) select.value = previousValue;
       } else {
-        const firstAvailable = [...select.options].find(o => !o.disabled);
+        const firstAvailable = [...select.options].find(o => !o.textContent.includes('(current)'));
         if (firstAvailable) select.value = firstAvailable.value;
       }
       select.style.display = 'inline-block';
