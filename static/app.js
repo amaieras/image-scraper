@@ -180,6 +180,7 @@ function getConfig() {
     priority_sites:     prioritySites,
     hermes_enabled:     document.getElementById('hermesEnabled')?.checked || false,
     hermes_output_path: document.getElementById('hermesOutputPath')?.value?.trim() || '',
+    folder_name:        document.getElementById('folderName')?.value?.trim() || '',
   };
 }
 
@@ -207,6 +208,8 @@ function resetAll() {
   document.getElementById('removeBg').checked = false;
   document.getElementById('pexelsKey').value = '';
   document.getElementById('bingKey').value = '';
+  const folderInput = document.getElementById('folderName');
+  if (folderInput) folderInput.value = '';
   document.getElementById('minAspectRatio').value = 0.4;
   document.getElementById('minAspectVal').textContent = '0.4';
   document.getElementById('maxAspectRatio').value = 2.5;

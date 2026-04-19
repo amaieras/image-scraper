@@ -44,6 +44,18 @@ async function startScraping() {
   }
   const config = getConfig();
 
+  // Check if custom folder already exists — ask user to confirm
+  if (config.folder_name) {
+    try {
+      const checkResp = await fetch(`/api/check-folder?name=${encodeURIComponent(config.folder_name)}`);
+      const checkData = await checkResp.json();
+      if (checkData.exists) {
+        const ok = confirm(`Folderul "${checkData.folder}" există deja (${checkData.file_count} fișiere).\n\nVrei să salvezi pozele în același folder?`);
+        if (!ok) return;
+      }
+    } catch (e) {}
+  }
+
   // Reset UI + approval state
   stats = { total: products.length, done: 0, success: 0, failed: 0, images: 0 };
   pendingImages = {};

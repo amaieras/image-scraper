@@ -80,6 +80,12 @@
           <button class="btn btn-sm btn-ghost" onclick="clearInput()">Șterge</button>
         </div>
 
+        <!-- Output folder name -->
+        <div style="margin-top:10px;">
+          <input type="text" id="folderName" placeholder="Nume folder (opțional — implicit: dată + ID)"
+            style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;">
+        </div>
+
         <!-- Start / Stop / Reset Buttons -->
         <button id="startBtn" class="btn btn-primary" onclick="startScraping()" style="margin-top:10px;">
           <i data-lucide="play" style="width:16px;height:16px;"></i> Pornește Căutarea
@@ -360,13 +366,13 @@
   </div>
 </div>
 
-<script src="/static/state.js?v=17"></script>
-<script src="/static/ui.js?v=17"></script>
-<script src="/static/approval.js?v=17"></script>
-<script src="/static/replace.js?v=17"></script>
-<script src="/static/scraper.js?v=17"></script>
-<script src="/static/app.js?v=17"></script>
-<script src="/static/update.js?v=17"></script>
+<script src="/static/state.js?v=18"></script>
+<script src="/static/ui.js?v=18"></script>
+<script src="/static/approval.js?v=18"></script>
+<script src="/static/replace.js?v=18"></script>
+<script src="/static/scraper.js?v=18"></script>
+<script src="/static/app.js?v=18"></script>
+<script src="/static/update.js?v=18"></script>
 <script>lucide.createIcons();</script>
 <script>
 // Toggle Hermes path visibility + save config

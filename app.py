@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -6236,6 +6236,19 @@ def stop_job(job_id):
     return jsonify({"ok": True, "job_id": job_id})
 
 
+@app.route("/api/check-folder")
+def check_folder():
+    """Check if an output folder already exists."""
+    name = request.args.get("name", "").strip()
+    name = re.sub(r'[^\w\s-]', '', name).strip()
+    name = re.sub(r'\s+', '_', name)
+    if not name:
+        return jsonify({"exists": False})
+    exists = (OUTPUT_DIR / name).exists()
+    file_count = len(list((OUTPUT_DIR / name).iterdir())) if exists else 0
+    return jsonify({"exists": exists, "file_count": file_count, "folder": name})
+
+
 @app.route("/api/start", methods=["POST"])
 def start_job():
     """Start a scraping job. Expects JSON with products list and config."""
@@ -6246,7 +6259,27 @@ def start_job():
     if not products:
         return jsonify({"error": "No products provided"}), 400
 
-    job_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    # Use custom folder name if provided, otherwise auto-generate
+    custom_folder = config.get("folder_name", "").strip()
+    if custom_folder:
+        # Sanitize: keep alphanumeric, hyphens, underscores, spaces→underscores
+        custom_folder = re.sub(r'[^\w\s-]', '', custom_folder).strip()
+        custom_folder = re.sub(r'\s+', '_', custom_folder)
+        if not custom_folder:
+            custom_folder = None
+    if custom_folder:
+        # Check if a job with this name is still active
+        if custom_folder in active_jobs:
+            old_job = active_jobs[custom_folder]
+            if old_job["status"] == "running" or old_job["thread"].is_alive():
+                return jsonify({"error": f"Un job cu numele '{custom_folder}' rulează deja"}), 400
+        # Check if previous run has unapproved pending images
+        pending_path = OUTPUT_DIR / custom_folder / "_pending"
+        if pending_path.exists() and any(pending_path.iterdir()):
+            return jsonify({"error": f"Folderul '{custom_folder}' are imagini neaprobate. Aprobă sau resetează mai întâi."}), 400
+        job_id = custom_folder
+    else:
+        job_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     event_queue = queue.Queue()
 
     thread = threading.Thread(
