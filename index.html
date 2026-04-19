@@ -96,9 +96,6 @@
           style="display:none;background:var(--danger);margin-top:8px;">
           <i data-lucide="square" style="width:16px;height:16px;"></i> Oprește
         </button>
-        <button id="resetBtn" class="btn btn-ghost" onclick="resetAll()" style="width:100%;margin-top:8px;" disabled>
-          <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Resetează Tot
-        </button>
       </div>
 
       <!-- Progress -->
@@ -353,6 +350,7 @@
         <!-- Hidden keys (loaded from config.json) -->
         <div style="display:none;">
           <input type="text" id="geminiKey" value="">
+          <input type="text" id="serpapiKey" value="">
         </div>
 
         <!-- Advanced (hidden) -->
@@ -362,6 +360,10 @@
           <input type="range" id="minAspectRatio" value="0.4">
           <input type="range" id="maxAspectRatio" value="2.5">
         </div>
+
+        <button id="resetBtn" class="btn btn-ghost" onclick="if(confirm('Ești sigur că vrei să resetezi tot?')) resetAll()" style="width:100%;margin-top:16px;opacity:0.7;" disabled>
+          <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i> Resetează Tot
+        </button>
       </div>
 
     </div>
@@ -398,6 +400,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 // Load saved config on page load
 fetch('/api/config').then(r=>r.json()).then(cfg=>{
   if(cfg.gemini_key){document.getElementById('geminiKey').value=cfg.gemini_key;}
+  if(cfg.serpapi_key){document.getElementById('serpapiKey').value=cfg.serpapi_key;}
   if(cfg.hermes_enabled){document.getElementById('hermesEnabled').checked=true;toggleHermesPath();}
   if(cfg.hermes_output_path){document.getElementById('hermesOutputPath').value=cfg.hermes_output_path;}
 }).catch(()=>{});

@@ -175,6 +175,7 @@ function getConfig() {
     bing_key:           document.getElementById('bingKey').value,
     anthropic_key:      '',
     gemini_key:         document.getElementById('geminiKey').value,
+    serpapi_key:        document.getElementById('serpapiKey')?.value || '',
     min_aspect_ratio:   +document.getElementById('minAspectRatio').value,
     max_aspect_ratio:   +document.getElementById('maxAspectRatio').value,
     priority_sites:     prioritySites,

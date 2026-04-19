@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.3.0"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -822,6 +822,147 @@ def local_packaging_text_check(data: bytes) -> dict:
                     "details": details}
     except Exception as e:
         return {"ok": None, "score": 0, "reason": f"Check error: {e}"}
+
+
+# ─── OCR TEXT DETECTION ───────────────────────────────────────────────
+
+def ocr_check_image(data: bytes, product_name: str) -> dict:
+    """
+    OCR check: detect text on product packaging and compare with product name.
+    Returns {found_text: str, matching_tokens: list, boost: float}
+    Boost is 0-15 points added to relevance score.
+    Gracefully returns boost=0 if easyocr not installed.
+    """
+    try:
+        import easyocr
+    except ImportError:
+        return {"found_text": "", "matching_tokens": [], "boost": 0,
+                "reason": "easyocr not installed"}
+
+    try:
+        # Initialize reader (cached after first call)
+        if not hasattr(ocr_check_image, "_reader"):
+            ocr_check_image._reader = easyocr.Reader(
+                ["en", "ro"], gpu=False, verbose=False)
+        reader = ocr_check_image._reader
+
+        # Read text from image bytes
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        # Resize to max 600px for speed
+        max_dim = 600
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+
+        import numpy as np
+        img_array = np.array(img)
+        results = reader.readtext(img_array, detail=0, paragraph=True)
+        found_text = " ".join(results).lower().strip()
+
+        if not found_text:
+            return {"found_text": "", "matching_tokens": [], "boost": 0,
+                    "reason": "No text detected"}
+
+        # Tokenize product name for matching
+        name_lower = product_name.lower()
+        name_tokens = set(re.findall(r'[a-zA-ZăâîșțéèêëüöïôàáùúñçÀ-ÿ]{3,}', name_lower))
+        # Remove generic noise
+        noise = {"ciocolata", "calda", "cafea", "ceai", "plic", "plicuri", "cutie",
+                 "cut", "buc", "bucati", "new", "nou", "product", "photo"}
+        name_tokens -= noise
+
+        # Find matches
+        matching = [t for t in name_tokens if t in found_text]
+
+        # Score: more matches = bigger boost (max 15)
+        if not name_tokens:
+            boost = 5 if found_text else 0  # has text but no tokens to match
+        else:
+            match_ratio = len(matching) / len(name_tokens)
+            boost = round(match_ratio * 15)
+
+        return {
+            "found_text": found_text[:200],
+            "matching_tokens": matching,
+            "boost": boost,
+            "reason": f"OCR: {len(matching)}/{len(name_tokens)} tokens matched",
+        }
+
+    except Exception as e:
+        return {"found_text": "", "matching_tokens": [], "boost": 0,
+                "reason": f"OCR error: {e}"}
+
+
+# ─── REVERSE IMAGE SEARCH (Google Lens via SerpApi) ──────────────────
+
+def reverse_image_check(image_url: str, product_name: str,
+                        api_key: str = "") -> dict:
+    """
+    Reverse image search via SerpApi Google Lens.
+    Returns {matches: list, boost: float, reason: str}
+    Boost is 0-10 points added to relevance score.
+    Gracefully returns boost=0 if no API key or on error.
+    """
+    if not api_key:
+        return {"matches": [], "boost": 0, "reason": "No SerpApi key"}
+
+    try:
+        resp = requests.get(
+            "https://serpapi.com/search.json",
+            params={
+                "engine": "google_lens",
+                "url": image_url,
+                "api_key": api_key,
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"matches": [], "boost": 0,
+                    "reason": f"SerpApi error: {resp.status_code}"}
+
+        data = resp.json()
+
+        # Check visual_matches and knowledge_graph for product identification
+        matches = []
+        name_lower = product_name.lower()
+        name_tokens = set(re.findall(r'[a-zA-ZăâîșțéèêëüöïôàáùúñçÀ-ÿ]{3,}', name_lower))
+        noise = {"ciocolata", "calda", "cafea", "ceai", "plic", "plicuri",
+                 "cutie", "product", "photo", "image"}
+        name_tokens -= noise
+
+        # Check visual matches
+        for vm in data.get("visual_matches", [])[:5]:
+            title = vm.get("title", "").lower()
+            source = vm.get("source", "").lower()
+            match_text = f"{title} {source}"
+            token_hits = sum(1 for t in name_tokens if t in match_text)
+            if token_hits > 0:
+                matches.append({"title": title[:100], "tokens_matched": token_hits})
+
+        # Check knowledge graph
+        kg = data.get("knowledge_graph", {})
+        if kg:
+            kg_title = kg.get("title", "").lower()
+            kg_hits = sum(1 for t in name_tokens if t in kg_title)
+            if kg_hits > 0:
+                matches.append({"title": f"KG: {kg_title[:100]}", "tokens_matched": kg_hits})
+
+        if not matches:
+            return {"matches": [], "boost": 0,
+                    "reason": "No matching results in reverse search"}
+
+        # Score: best match determines boost (max 10)
+        best_match = max(m["tokens_matched"] for m in matches)
+        boost = min(10, best_match * 3)
+
+        return {
+            "matches": matches,
+            "boost": boost,
+            "reason": f"Reverse search: {len(matches)} matches, best={best_match} tokens",
+        }
+
+    except Exception as e:
+        return {"matches": [], "boost": 0, "reason": f"Reverse search error: {e}"}
 
 
 # Global instance (lazy loaded)
@@ -5765,6 +5906,35 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
             return (is_pri, rel + position_bonus)
 
         valid_candidates.sort(key=_sort_key, reverse=True)
+
+        # ── OCR BOOST: run OCR on top candidates to boost/penalize based on text ──
+        if valid_candidates:
+            serpapi_key = config.get("serpapi_key", "") or os.environ.get("SERPAPI_KEY", "")
+            for i, (data, qc, rel_score, url, img_hash, src) in enumerate(valid_candidates[:3]):
+                # OCR check
+                ocr = ocr_check_image(data, denumire)
+                if ocr["boost"] > 0:
+                    print(f"[OCR] +{ocr['boost']} boost for {url[:80]} — {ocr['reason']}")
+                    send("status", {"message": f"📝 OCR: found '{', '.join(ocr['matching_tokens'][:3])}' on packaging"})
+                elif ocr["found_text"]:
+                    print(f"[OCR] No match for {url[:80]} — text: '{ocr['found_text'][:60]}'")
+
+                # Reverse image search (only on top 1 candidate, only if API key exists)
+                rev_boost = 0
+                if i == 0 and serpapi_key:
+                    rev = reverse_image_check(url, denumire, serpapi_key)
+                    rev_boost = rev["boost"]
+                    if rev_boost > 0:
+                        print(f"[REVERSE] +{rev_boost} boost for {url[:80]} — {rev['reason']}")
+                        send("status", {"message": f"🔍 Reverse search confirmed: {rev['reason']}"})
+
+                # Apply boosts (update candidate tuple)
+                new_score = min(100, rel_score + ocr["boost"] + rev_boost)
+                if new_score != rel_score:
+                    valid_candidates[i] = (data, qc, new_score, url, img_hash, src)
+
+            # Re-sort after boosts
+            valid_candidates.sort(key=_sort_key, reverse=True)
 
         # ── LAST RESORT: if no valid candidates, try progressively simpler queries ──
         if not valid_candidates:

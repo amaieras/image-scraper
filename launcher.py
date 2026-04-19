@@ -57,6 +57,7 @@ AI_DEPS = [
     "torchvision",
     "open-clip-torch",
     "sentence-transformers",
+    "easyocr",
 ]
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
