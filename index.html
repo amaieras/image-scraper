@@ -81,9 +81,11 @@
         </div>
 
         <!-- Output folder name -->
-        <div style="margin-top:10px;">
+        <div style="margin-top:10px;position:relative;">
           <input type="text" id="folderName" placeholder="Nume folder (opțional — implicit: dată + ID)"
-            style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;">
+            style="width:100%;padding:8px 30px 8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;">
+          <button onclick="document.getElementById('folderName').value=''" title="Șterge"
+            style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;padding:2px 6px;">&times;</button>
         </div>
 
         <!-- Start / Stop / Reset Buttons -->
