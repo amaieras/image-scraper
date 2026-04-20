@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -369,9 +369,9 @@ class RelevanceChecker:
 
             self._loaded = True
             self._available = True
-            logger.info("CLIP model loaded and self-test passed")
+            print("[CLIP] Model loaded and self-test passed")
         except Exception as e:
-            logger.warning(f"CLIP not available: {type(e).__name__}: {e}")
+            print(f"[CLIP] NOT available: {type(e).__name__}: {e}")
             self._loaded = True
             self._available = False
 
@@ -751,6 +751,64 @@ class RelevanceChecker:
         except Exception as e:
             logger.warning(f"CLIP packaging check error: {e}")
             return {"ok": True, "reason": f"Packaging check error: {e}"}
+
+    def person_check(self, image_features) -> dict:
+        """
+        CLIP check: does the image show a person/face instead of a product?
+        Rejects images where a human face or portrait dominates the frame.
+        Uses the same cached image_features from check() — zero extra image encoding.
+        """
+        if not self.available or image_features is None:
+            return {"ok": True, "reason": "CLIP not available for person check"}
+
+        try:
+            torch = self.torch
+
+            person_prompts = self.tokenizer([
+                "a portrait photo of a person",
+                "a human face close-up photograph",
+                "a celebrity or famous person photo",
+                "a person smiling at the camera",
+                "a headshot photograph of a man or woman",
+            ])
+            product_prompts = self.tokenizer([
+                "a commercial product on white background",
+                "a packaged food or drink product",
+                "retail merchandise product photo",
+                "a product package with label and branding",
+            ])
+
+            with torch.no_grad():
+                person_feat = self.model.encode_text(person_prompts)
+                product_feat = self.model.encode_text(product_prompts)
+                person_feat = person_feat / person_feat.norm(dim=-1, keepdim=True)
+                product_feat = product_feat / product_feat.norm(dim=-1, keepdim=True)
+
+                person_sim = (image_features @ person_feat.T).squeeze().max().item()
+                product_sim = (image_features @ product_feat.T).squeeze().max().item()
+
+            print(f"[PERSON-CHECK] person={person_sim:.3f} product={product_sim:.3f}")
+
+            # Reject if person similarity beats product similarity
+            # Threshold 0.22: low enough to catch footballer photos (0.23) but
+            # real product images score person < 0.15 so no false positives
+            if person_sim > product_sim and person_sim > 0.22:
+                return {
+                    "ok": False,
+                    "person_score": round(person_sim, 3),
+                    "product_score": round(product_sim, 3),
+                    "reason": f"Image shows a person ({person_sim:.3f}) not a product ({product_sim:.3f})",
+                }
+
+            return {
+                "ok": True,
+                "person_score": round(person_sim, 3),
+                "product_score": round(product_sim, 3),
+                "reason": "Not a person",
+            }
+        except Exception as e:
+            logger.warning(f"CLIP person check error: {e}")
+            return {"ok": True, "reason": f"Person check error: {e}"}
 
 
 def local_packaging_text_check(data: bytes) -> dict:
@@ -5640,6 +5698,20 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                             "relevance_score": round(clip_score * 0.7 + url_score_100 * 0.3),
                         })
                         print(f"[PACKAGING] Rejected {url[:80]} — {pc['reason']}")
+                        continue
+
+                    # PERSON CHECK: reject images showing a person/face instead of a product
+                    prc = relevance_checker.person_check(img_feat)
+                    if not prc.get("ok", True):
+                        send("candidate_checked", {
+                            "index": idx, "url": url[:100],
+                            "quality_score": qc["score"], "passed": False,
+                            "reasons": [f"Image is a person, not a product ({prc.get('reason', '')})"],
+                            "details": {**qc["details"], "person": prc.get("person_score"),
+                                        "product": prc.get("product_score"), "clip": clip_score},
+                            "relevance_score": round(clip_score * 0.7 + url_score_100 * 0.3),
+                        })
+                        print(f"[PERSON] Rejected {url[:80]} — {prc['reason']}")
                         continue
 
                 # Combined score: 70% CLIP + 30% URL keywords
