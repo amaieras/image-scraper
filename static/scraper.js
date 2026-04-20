@@ -266,8 +266,6 @@ function addResultCard(data) {
       <div class="result-images">${imagesHtml}</div>
       <div class="result-meta">
         ${data.images?.[0]?.image_domain ? `<span class="badge">${data.images[0].image_domain}</span>` : `<span class="badge">${data.source || '-'}</span>`}
-        ${data.images?.[0]?.quality_score ? `<span class="badge">Q:${data.images[0].quality_score}</span>` : ''}
-        ${data.images?.[0]?.relevance_score != null ? `<span class="badge">R:${data.images[0].relevance_score}</span>` : ''}
         <a class="replace-link" onclick="toggleReplaceForm('${cardId}')">Caută altă poză</a>
       </div>
       <div class="replace-form" id="replace-${cardId}" style="display:none">

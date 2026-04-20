@@ -179,8 +179,6 @@ function getConfig() {
     min_aspect_ratio:   +document.getElementById('minAspectRatio').value,
     max_aspect_ratio:   +document.getElementById('maxAspectRatio').value,
     priority_sites:     prioritySites,
-    hermes_enabled:     document.getElementById('hermesEnabled')?.checked || false,
-    hermes_output_path: document.getElementById('hermesOutputPath')?.value?.trim() || '',
     folder_name:        document.getElementById('folderName')?.value?.trim() || '',
   };
 }

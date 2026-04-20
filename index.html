@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Image Scraper - Hermes B2B</title>
+  <title>Image Scraper</title>
   <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
   <link rel="stylesheet" href="/static/style.css?v=19">
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -80,14 +80,6 @@
           <button class="btn btn-sm btn-ghost" onclick="clearInput()">Șterge</button>
         </div>
 
-        <!-- Output folder name -->
-        <div style="margin-top:10px;position:relative;">
-          <input type="text" id="folderName" placeholder="Nume folder (opțional — implicit: dată + ID)"
-            style="width:100%;padding:8px 30px 8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;">
-          <button onclick="document.getElementById('folderName').value=''" title="Șterge"
-            style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;padding:2px 6px;">&times;</button>
-        </div>
-
         <!-- Start / Stop / Reset Buttons -->
         <button id="startBtn" class="btn btn-primary" onclick="startScraping()" style="margin-top:10px;">
           <i data-lucide="play" style="width:16px;height:16px;"></i> Pornește Căutarea
@@ -138,89 +130,22 @@
         <div id="logContainer" class="log-container"></div>
       </div>
 
-      <!-- Results -->
-      <div id="resultsSection" class="results-section">
-        <div class="card">
-          <div class="card-title"><i data-lucide="images" class="icon"></i> Rezultate</div>
-          <div id="resultsGrid" class="results-grid"></div>
-        </div>
-      </div>
     </div>
 
-<!-- Approval Toolbar (floating bottom bar) -->
-<div id="approvalToolbar" class="approval-toolbar">
-  <div id="approvalActions" class="approval-actions">
-    <button class="btn btn-sm btn-ghost" onclick="selectAllImages()">Selectează tot</button>
-    <button class="btn btn-sm btn-ghost" onclick="deselectAllImages()">Deselectează tot</button>
-  </div>
-  <span id="approvalCount" class="approval-count">0 / 0 selectate</span>
-  <button id="approveBtn" class="btn btn-approve" onclick="approveSelected()">Aprobă Selecția</button>
-  <button id="downloadZipBtn" class="btn btn-download-zip" onclick="downloadZip()">Descarcă ZIP</button>
-</div>
-
-    <!-- RIGHT COLUMN - Config -->
+    <!-- LEFT COLUMN - Config (sidebar) -->
     <div class="right-col">
       <div class="card">
         <div class="card-title"><i data-lucide="settings" class="icon"></i> Configurare</div>
 
-        <!-- Quality Preset -->
+        <!-- Folder Name (moved from product card) -->
         <div class="config-group">
-          <div class="config-label">
-            Preset Calitate
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Setări predefinite care ajustează mai multe valori deodată. Rapid = viteză maximă, Calitate = precizie maximă.</span>
-            </span>
+          <div class="config-label">Nume Folder</div>
+          <div style="position:relative;">
+            <input type="text" id="folderName" placeholder="Opțional — implicit: dată + ID"
+              style="width:100%;padding:8px 30px 8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;">
+            <button onclick="document.getElementById('folderName').value=''" title="Șterge"
+              style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;padding:2px 6px;">&times;</button>
           </div>
-          <div class="preset-chips">
-            <span class="chip" onclick="applyPreset('fast')" data-preset="fast">Rapid</span>
-            <span class="chip" onclick="applyPreset('balanced')" data-preset="balanced">Echilibrat</span>
-            <span class="chip active" onclick="applyPreset('quality')" data-preset="quality">Calitate Înaltă</span>
-          </div>
-        </div>
-
-        <!-- Priority Sites -->
-        <div class="config-group">
-          <div class="config-label">
-            Site-uri Prioritare
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Se caută mai întâi pe aceste site-uri. Dacă nu găsește, trece la căutare generală. Poți pune URL-uri complete sau doar domenii.</span>
-            </span>
-            <span class="value" id="siteCount" style="font-weight:400;font-size:11px;">se caută întâi</span>
-          </div>
-          <textarea id="prioritySites" class="product-input" style="min-height:80px;font-size:12px;"
-            placeholder="Un domeniu pe linie (se caută întâi aici, apoi general)&#10;&#10;Exemplu:&#10;amazon.com&#10;emag.ro&#10;carrefour.ro"
-            oninput="updateSiteCount()"></textarea>
-        </div>
-
-        <!-- Min Quality Score -->
-        <div class="config-group">
-          <div class="config-label">
-            Scor Calitate Minim
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Imaginile sub acest scor sunt respinse. Scorul analizează rezoluția, claritatea, culorile și dimensiunea fișierului.</span>
-            </span>
-            <span class="value" id="qualityScoreVal">60</span>
-          </div>
-          <input type="range" id="minQualityScore" min="10" max="90" value="60"
-            oninput="document.getElementById('qualityScoreVal').textContent=this.value">
-        </div>
-
-        <!-- Min Resolution -->
-        <div class="config-group">
-          <div class="config-label" style="display:flex;align-items:center;gap:6px;">
-            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;">
-              <input type="checkbox" id="useMinResolution" onchange="toggleMinRes()"
-                style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
-              Rezoluție Minimă Sursă (px)
-            </label>
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Dacă e bifat, respinge imaginile sub această rezoluție. Dezactivat = acceptă orice rezoluție.</span>
-            </span>
-            <span class="value" id="minResVal" style="opacity:0.4;">off</span>
-          </div>
-          <input type="range" id="minResolution" min="50" max="2000" value="800" step="50"
-            oninput="document.getElementById('minResVal').textContent=this.value"
-            disabled style="opacity:0.35;">
         </div>
 
         <!-- Output Size -->
@@ -239,111 +164,112 @@
           </div>
         </div>
 
-        <!-- Images per product -->
+        <!-- Priority Sites -->
         <div class="config-group">
           <div class="config-label">
-            Imagini per Produs
+            Site-uri Prioritare
             <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Câte imagini diferite să salveze pentru fiecare produs. Mai multe = mai multe variante de ales.</span>
+              <span class="tip-text">Se caută mai întâi pe aceste site-uri. Dacă nu găsește, trece la căutare generală.</span>
             </span>
-            <span class="value" id="imagesPerVal">1</span>
+            <span class="value" id="siteCount" style="font-weight:400;font-size:11px;">se caută întâi</span>
           </div>
-          <input type="range" id="imagesPerProduct" min="1" max="5" value="1"
-            oninput="document.getElementById('imagesPerVal').textContent=this.value">
+          <textarea id="prioritySites" class="product-input" style="min-height:70px;font-size:12px;"
+            placeholder="Un domeniu pe linie&#10;ex: cafeo.ro&#10;emag.ro"
+            oninput="updateSiteCount()"></textarea>
         </div>
 
-        <!-- Output Format -->
-        <div class="config-group">
-          <div class="config-label">
-            Format Ieșire
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">WebP = cel mai bun pentru web (50% mai mic ca JPEG, suport transparență). JPEG = compatibilitate maximă. PNG = lossless, cel mai mare.</span>
-            </span>
+        <!-- Advanced Settings (collapsible) -->
+        <div class="config-group" style="margin-top:4px;">
+          <div class="advanced-toggle" onclick="this.classList.toggle('open');document.getElementById('advancedConfig').classList.toggle('open');">
+            <i data-lucide="chevron-right" style="width:14px;height:14px;transition:transform 0.2s;"></i>
+            <span style="font-size:12px;color:var(--text-dim);">Setări Avansate</span>
           </div>
-          <select id="outputFormat" onchange="document.getElementById('qualityGroup').style.display=this.value==='png'?'none':'block'">
-            <option value="webp">WebP (recomandat pentru web)</option>
-            <option value="jpeg" selected>JPEG (compatibilitate maximă)</option>
-            <option value="png">PNG (lossless, fișiere mari)</option>
-          </select>
-        </div>
+          <div id="advancedConfig" class="advanced-config">
 
-        <!-- Quality -->
-        <div class="config-group" id="qualityGroup">
-          <div class="config-label">
-            Calitate Compresie
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">95 = calitate excelentă, 70 = fișiere mici. Nu se aplică la PNG (mereu lossless).</span>
-            </span>
-            <span class="value" id="qualityVal">98</span>
-          </div>
-          <input type="range" id="quality" min="50" max="100" value="98"
-            oninput="document.getElementById('qualityVal').textContent=this.value">
-        </div>
-
-        <!-- Search Suffix -->
-        <div class="config-group">
-          <div class="config-label">
-            Sufix Căutare
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Text adăugat automat la căutare. Ajută motoarele să returneze poze de produs, nu articole sau meme-uri.</span>
-            </span>
-          </div>
-          <input type="text" id="searchSuffix" value="product photo" placeholder="e.g. product photo">
-        </div>
-
-        <!-- Max candidates -->
-        <div class="config-group">
-          <div class="config-label">
-            Candidați Maximi per Produs
-            <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-              <span class="tip-text">Câte imagini descarcă și evaluează pentru a o alege pe cea mai bună. Mai mulți = rezultate mai precise, dar mai lent.</span>
-            </span>
-            <span class="value" id="maxCandVal">15</span>
-          </div>
-          <input type="range" id="maxCandidates" min="3" max="20" value="15"
-            oninput="document.getElementById('maxCandVal').textContent=this.value">
-        </div>
-
-        <!-- Toggles -->
-        <div class="config-group" style="margin-top:8px;">
-          <input type="hidden" id="checkRelevance" value="true">
-          <div class="toggle-row">
-            <span class="toggle-label">Eliminare Fundal (AI)
-              <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-                <span class="tip-text">Elimină fundalul imaginii și pune produsul pe alb pur. Necesită rembg instalat. E mai lent dar dă rezultate profesionale.</span>
-              </span>
-            </span>
-            <label class="toggle">
-              <input type="checkbox" id="removeBg">
-              <span class="slider"></span>
-            </label>
-          </div>
-          <input type="hidden" id="rejectBlurry" value="true">
-        </div>
-
-        <!-- Hermes Integration -->
-        <div class="config-group hermes-section" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);">
-          <div class="toggle-row">
-            <span class="toggle-label">
-              <i data-lucide="server" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;"></i>
-              Hermes B2B Export
-              <span class="info-tip"><i data-lucide="info" style="width:13px;height:13px;"></i>
-                <span class="tip-text">La aprobare, creează copii JPEG redimensionate (max 800×800px) cu denumire Hermes: ID\}\{Comentariu#N.jpg. Necesită fișier Excel cu coloană ID/Cod.</span>
-              </span>
-            </span>
-            <label class="toggle">
-              <input type="checkbox" id="hermesEnabled" onchange="toggleHermesPath()">
-              <span class="slider"></span>
-            </label>
-          </div>
-          <div id="hermesPathGroup" style="display:none;margin-top:8px;">
-            <label class="config-label" style="font-size:0.82rem;color:var(--muted);">Cale export Hermes (opțional)</label>
-            <input type="text" id="hermesOutputPath" class="replace-input"
-              placeholder="ex: \\\\10.50.0.15\\imagini sau /mnt/hermes"
-              style="width:100%;font-size:0.85rem;margin-top:4px;">
-            <div style="font-size:0.75rem;color:var(--muted);margin-top:3px;">
-              Gol = doar local (_hermes/). Completează pentru export pe server.
+            <!-- Min Quality Score -->
+            <div class="config-group">
+              <div class="config-label">
+                Scor Calitate Minim
+                <span class="value" id="qualityScoreVal">60</span>
+              </div>
+              <input type="range" id="minQualityScore" min="10" max="90" value="60"
+                oninput="document.getElementById('qualityScoreVal').textContent=this.value">
             </div>
+
+            <!-- Min Resolution -->
+            <div class="config-group">
+              <div class="config-label" style="display:flex;align-items:center;gap:6px;">
+                <label style="display:flex;align-items:center;gap:5px;cursor:pointer;margin:0;">
+                  <input type="checkbox" id="useMinResolution" onchange="toggleMinRes()"
+                    style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+                  Rez. Min. Sursă
+                </label>
+                <span class="value" id="minResVal" style="opacity:0.4;">off</span>
+              </div>
+              <input type="range" id="minResolution" min="50" max="2000" value="800" step="50"
+                oninput="document.getElementById('minResVal').textContent=this.value"
+                disabled style="opacity:0.35;">
+            </div>
+
+            <!-- Images per product -->
+            <div class="config-group">
+              <div class="config-label">
+                Imagini per Produs
+                <span class="value" id="imagesPerVal">1</span>
+              </div>
+              <input type="range" id="imagesPerProduct" min="1" max="5" value="1"
+                oninput="document.getElementById('imagesPerVal').textContent=this.value">
+            </div>
+
+            <!-- Output Format -->
+            <div class="config-group">
+              <div class="config-label">Format Ieșire</div>
+              <select id="outputFormat" onchange="document.getElementById('qualityGroup').style.display=this.value==='png'?'none':'block'">
+                <option value="webp">WebP</option>
+                <option value="jpeg" selected>JPEG</option>
+                <option value="png">PNG</option>
+              </select>
+            </div>
+
+            <!-- Quality -->
+            <div class="config-group" id="qualityGroup">
+              <div class="config-label">
+                Calitate Compresie
+                <span class="value" id="qualityVal">98</span>
+              </div>
+              <input type="range" id="quality" min="50" max="100" value="98"
+                oninput="document.getElementById('qualityVal').textContent=this.value">
+            </div>
+
+            <!-- Search Suffix -->
+            <div class="config-group">
+              <div class="config-label">Sufix Căutare</div>
+              <input type="text" id="searchSuffix" value="product photo" placeholder="e.g. product photo">
+            </div>
+
+            <!-- Max candidates -->
+            <div class="config-group">
+              <div class="config-label">
+                Candidați Maximi
+                <span class="value" id="maxCandVal">15</span>
+              </div>
+              <input type="range" id="maxCandidates" min="3" max="20" value="15"
+                oninput="document.getElementById('maxCandVal').textContent=this.value">
+            </div>
+
+            <!-- Toggles -->
+            <div class="config-group">
+              <input type="hidden" id="checkRelevance" value="true">
+              <div class="toggle-row">
+                <span class="toggle-label">Eliminare Fundal (AI)</span>
+                <label class="toggle">
+                  <input type="checkbox" id="removeBg">
+                  <span class="slider"></span>
+                </label>
+              </div>
+              <input type="hidden" id="rejectBlurry" value="true">
+            </div>
+
           </div>
         </div>
 
@@ -353,7 +279,7 @@
           <input type="text" id="serpapiKey" value="">
         </div>
 
-        <!-- Advanced (hidden) -->
+        <!-- Hidden advanced values -->
         <div style="display:none;">
           <input type="text" id="pexelsKey" value="">
           <input type="text" id="bingKey" value="">
@@ -367,7 +293,26 @@
       </div>
 
     </div>
+
+    <!-- Results (full width below products) -->
+    <div id="resultsSection" class="results-section">
+      <div class="card">
+        <div class="card-title"><i data-lucide="images" class="icon"></i> Rezultate</div>
+        <div id="resultsGrid" class="results-grid"></div>
+      </div>
+    </div>
   </div>
+</div>
+
+<!-- Approval Toolbar (floating bottom bar) -->
+<div id="approvalToolbar" class="approval-toolbar">
+  <div id="approvalActions" class="approval-actions">
+    <button class="btn btn-sm btn-ghost" onclick="selectAllImages()">Selectează tot</button>
+    <button class="btn btn-sm btn-ghost" onclick="deselectAllImages()">Deselectează tot</button>
+  </div>
+  <span id="approvalCount" class="approval-count">0 / 0 selectate</span>
+  <button id="approveBtn" class="btn btn-approve" onclick="approveSelected()">Aprobă Selecția</button>
+  <button id="downloadZipBtn" class="btn btn-download-zip" onclick="downloadZip()">Descarcă ZIP</button>
 </div>
 
 <script src="/static/state.js?v=19"></script>
@@ -379,30 +324,10 @@
 <script src="/static/update.js?v=19"></script>
 <script>lucide.createIcons();</script>
 <script>
-// Toggle Hermes path visibility + save config
-function toggleHermesPath(){
-  const on=document.getElementById('hermesEnabled').checked;
-  document.getElementById('hermesPathGroup').style.display=on?'block':'none';
-  saveHermesConfig();
-}
-function saveHermesConfig(){
-  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({hermes_enabled:document.getElementById('hermesEnabled').checked,
-      hermes_output_path:document.getElementById('hermesOutputPath').value.trim()})
-  }).catch(()=>{});
-}
-// Debounced save for path input
-let _hermesPathTimer;
-document.addEventListener('DOMContentLoaded',()=>{
-  const hp=document.getElementById('hermesOutputPath');
-  if(hp)hp.addEventListener('input',()=>{clearTimeout(_hermesPathTimer);_hermesPathTimer=setTimeout(saveHermesConfig,800);});
-});
 // Load saved config on page load
 fetch('/api/config').then(r=>r.json()).then(cfg=>{
   if(cfg.gemini_key){document.getElementById('geminiKey').value=cfg.gemini_key;}
   if(cfg.serpapi_key){document.getElementById('serpapiKey').value=cfg.serpapi_key;}
-  if(cfg.hermes_enabled){document.getElementById('hermesEnabled').checked=true;toggleHermesPath();}
-  if(cfg.hermes_output_path){document.getElementById('hermesOutputPath').value=cfg.hermes_output_path;}
 }).catch(()=>{});
 </script>
 </body>
