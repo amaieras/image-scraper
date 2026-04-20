@@ -265,7 +265,7 @@ function addResultCard(data) {
       </div>
       <div class="result-images">${imagesHtml}</div>
       <div class="result-meta">
-        ${data.images?.[0]?.image_domain ? `<span class="badge">${data.images[0].image_domain}</span>` : `<span class="badge">${data.source || '-'}</span>`}
+        ${data.images?.[0]?.image_url ? `<a class="badge" href="${data.images[0].image_url}" target="_blank" rel="noopener" title="${data.images[0].image_url}">${data.images[0].image_domain || data.source || 'link'} <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-left:2px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></a>` : `<span class="badge">${data.source || '-'}</span>`}
         <a class="replace-link" onclick="toggleReplaceForm('${cardId}')">Caută altă poză</a>
       </div>
       <div class="replace-form" id="replace-${cardId}" style="display:none">
