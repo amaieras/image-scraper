@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -6041,19 +6041,30 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                                          30, url_ulr, ulr_hash, "ultra-lastresort"))
                 break
 
+        print(f"[SAVE] {denumire}: {len(valid_candidates)} valid candidates, will save up to {images_per_product}")
         for data, qc, rel_score, url, img_hash, src in valid_candidates[:images_per_product]:
+            filename = "?"
+            filepath = None
             try:
                 processed = resize_and_pad(data, target_size, quality=quality,
                                            remove_bg=remove_bg,
                                            output_format=output_format)
+                print(f"[SAVE] processed bytes={len(processed)}, format={output_format}")
                 img_num = len(saved_images) + 1
                 filename = hermes_filename(product_id, denumire, img_num,
                                            fmt=output_format)
+                print(f"[SAVE] filename='{filename}' (len={len(filename)})")
                 # Save to _pending subdirectory (user must approve before final save)
                 pending_dir = output_dir / "_pending"
                 pending_dir.mkdir(exist_ok=True)
+                print(f"[SAVE] pending_dir='{pending_dir}' exists={pending_dir.exists()}")
                 filepath = pending_dir / filename
+                print(f"[SAVE] writing to: {filepath}")
                 filepath.write_bytes(processed)
+                if filepath.exists():
+                    print(f"[SAVE] SUCCESS: file written, size={filepath.stat().st_size}")
+                else:
+                    print(f"[SAVE] WARNING: write_bytes returned but file not found at {filepath}")
 
                 thumb = make_thumbnail(processed)
 
@@ -6081,11 +6092,12 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                         "denumire": denumire,
                     }
             except Exception as e:
-                logger.warning(f"[SAVE-FAIL] {denumire} → {filename if 'filename' in dir() else '?'}: {type(e).__name__}: {e}")
+                print(f"[SAVE-FAIL] {denumire} → filename='{filename}' filepath='{filepath}': {type(e).__name__}: {e}")
                 import traceback
-                logger.warning(traceback.format_exc())
+                print(traceback.format_exc())
 
         status = "ok" if saved_images else "failed"
+        print(f"[SAVE-RESULT] {denumire}: {len(saved_images)} saved, status={status}")
         if saved_images:
             stats["success"] += 1
             stats["images_saved"] += len(saved_images)
