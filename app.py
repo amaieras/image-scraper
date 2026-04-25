@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.5"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -5217,7 +5217,7 @@ def hermes_filename(product_id: str, denumire: str, image_number: int,
                     fmt: str = "webp") -> str:
     comment = sanitize_comment(denumire)
     ext = {"webp": ".webp", "png": ".png", "jpeg": ".jpg"}.get(fmt.lower(), ".webp")
-    return str(product_id) + "\\}\\{" + comment + "\\}#" + str(image_number) + ext
+    return str(product_id) + "}{" + comment + "}#" + str(image_number) + ext
 
 
 # ─── SCRAPER JOB ──────────────────────────────────────────────────────────
@@ -5289,13 +5289,7 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
     if ai_matcher.available:
         send("status", {"message": "AI product matching enabled (Claude Haiku)"})
 
-    gemini_key = config.get("gemini_key", "") or os.environ.get("GEMINI_API_KEY", "") or _load_config_file().get("gemini_key", "")
-    print(f"[CONFIG] gemini_key present: {bool(gemini_key)} (len={len(gemini_key) if gemini_key else 0})")
     print(f"[CONFIG] config keys: {list(config.keys())}")
-    if gemini_key:
-        send("status", {"message": "Gemini Vision image verification enabled (FREE)"})
-    else:
-        send("status", {"message": "Gemini Vision disabled — add Gemini API key for image verification (free at aistudio.google.com)"})
 
     send("job_start", {
         "job_id": job_id,
@@ -5839,80 +5833,39 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                     })
                     continue
 
-            # ── GEMINI VISION: single product + text verification ──
-            # Uses Google Gemini Flash (FREE) to verify:
-            # 1. Only 1 product in image  2. Packaging text matches product name
-            gemini_key = config.get("gemini_key", "") or os.environ.get("GEMINI_API_KEY", "") or _load_config_file().get("gemini_key", "")
-            if gemini_key:
-                send("status", {"message": f"👁️ Gemini Vision: {denumire[:40]}..."})
-                vision_result = gemini_vision_check_image(data, denumire, gemini_key)
-                v_ok = vision_result.get("ok", True)
-                v_count = vision_result.get("count", "?")
-                v_text = vision_result.get("visible_text", "")[:50]
-                v_reason = vision_result.get("reason", "")
-                if v_ok is True:
-                    send("status", {"message": f"👁️ Gemini: {v_count} item, text='{v_text}' → OK"})
-                elif v_ok is None:
-                    # Gemini failed (429/error) — fallback to local checks
-                    send("status", {"message": f"👁️ Gemini unavailable, using local checks..."})
-                    # Use stricter CLIP + URL conflict as fallback
-                    fallback_ok = True
-                    fallback_reasons = []
-                    # Check URL conflict (image URL + product page URL)
-                    if url_has_conflicting_product(url, denumire):
-                        fallback_ok = False
-                        fallback_reasons.append("URL conflict (local fallback)")
-                    product_url_fb = img_to_product_url.get(url, "")
-                    if product_url_fb and url_has_conflicting_product(product_url_fb, denumire):
-                        fallback_ok = False
-                        fallback_reasons.append("Product page conflict (local fallback)")
-                    # Check search result title/snippet for type conflict
-                    # (search engine results often contain "sirop" or "piure" in title)
-                    result_title = img_to_product_url.get(url, "") or url
-                    # Also check the referrer page title if available
-                    for su, ss in search_urls:
-                        if su == url and isinstance(ss, str) and ss:
-                            result_title = ss + " " + result_title
-                            break
-                    if url_has_conflicting_product(result_title, denumire):
-                        fallback_ok = False
-                        fallback_reasons.append("Search result type conflict (local fallback)")
-                    # Require higher CLIP score when no Vision
-                    if clip_score is not None and clip_score < 0.22:
-                        fallback_ok = False
-                        fallback_reasons.append(f"Low CLIP score {clip_score:.2f} (local fallback)")
-                    # Local packaging/text check when Gemini unavailable
-                    if not is_priority:
-                        pkg_check = local_packaging_text_check(data)
-                        if pkg_check["ok"] is False:
-                            fallback_ok = False
-                            fallback_reasons.append(f"No packaging/text ({pkg_check['reason']})")
-                    if not fallback_ok:
-                        send("candidate_checked", {
-                            "index": idx, "url": url[:100],
-                            "quality_score": qc["score"], "passed": False,
-                            "reasons": fallback_reasons,
-                            "details": {**qc["details"], "url_match": url_score_100, "clip": clip_score},
-                            "relevance_score": relevance_score,
-                        })
-                        continue
-                    send("status", {"message": f"👁️ Local fallback: CLIP={clip_score}, URL OK → accepted"})
-                else:
-                    send("status", {"message": f"👁️ Gemini REJECT: {v_reason}"})
-                    send("candidate_checked", {
-                        "index": idx, "url": url[:100],
-                        "quality_score": qc["score"], "passed": False,
-                        "reasons": [f"Gemini Vision: {v_reason}"],
-                        "details": {**qc["details"], "url_match": url_score_100,
-                                    "clip": clip_score,
-                                    "vision_count": v_count,
-                                    "vision_text": v_text},
-                        "relevance_score": relevance_score,
-                    })
-                    continue
+            # ── LOCAL VERIFICATION: URL conflict + CLIP + packaging checks ──
+            fallback_ok = True
+            fallback_reasons = []
+            if url_has_conflicting_product(url, denumire):
+                fallback_ok = False
+                fallback_reasons.append("URL conflict")
+            product_url_fb = img_to_product_url.get(url, "")
+            if product_url_fb and url_has_conflicting_product(product_url_fb, denumire):
+                fallback_ok = False
+                fallback_reasons.append("Product page conflict")
+            result_title = img_to_product_url.get(url, "") or url
+            for su, ss in search_urls:
+                if su == url and isinstance(ss, str) and ss:
+                    result_title = ss + " " + result_title
+                    break
+            if url_has_conflicting_product(result_title, denumire):
+                fallback_ok = False
+                fallback_reasons.append("Search result type conflict")
+            if clip_score is not None and clip_score < 0.22:
+                fallback_ok = False
+                fallback_reasons.append(f"Low CLIP score {clip_score:.2f}")
+            if not fallback_ok:
+                send("candidate_checked", {
+                    "index": idx, "url": url[:100],
+                    "quality_score": qc["score"], "passed": False,
+                    "reasons": fallback_reasons,
+                    "details": {**qc["details"], "url_match": url_score_100, "clip": clip_score},
+                    "relevance_score": relevance_score,
+                })
+                continue
 
-            # Local packaging check when no Gemini — reject generic images
-            if not gemini_key and not is_priority:
+            # Local packaging check — reject generic/loose images for non-priority results
+            if not is_priority:
                 pkg_check = local_packaging_text_check(data)
                 if pkg_check["ok"] is False:
                     send("candidate_checked", {
@@ -6128,7 +6081,9 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                         "denumire": denumire,
                     }
             except Exception as e:
-                logger.debug(f"Process error for {denumire}: {e}")
+                logger.warning(f"[SAVE-FAIL] {denumire} → {filename if 'filename' in dir() else '?'}: {type(e).__name__}: {e}")
+                import traceback
+                logger.warning(traceback.format_exc())
 
         status = "ok" if saved_images else "failed"
         if saved_images:
