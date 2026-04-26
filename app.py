@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.7"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -1791,6 +1791,8 @@ class SitemapProductIndex:
     """
 
     _cache: dict[str, list[dict]] = {}  # domain → [{url, slug, images, title}]
+    _categories_cache: dict[str, list[str]] = {}  # domain → [category URLs]
+    _all_urls_cache: dict[str, list[str]] = {}  # domain → [all sitemap <loc> values]
     _lock = threading.Lock()
 
     @classmethod
@@ -1872,8 +1874,10 @@ class SitemapProductIndex:
                         pass
                     return None
 
-                with ThreadPoolExecutor(max_workers=5) as pool:
-                    futures = [pool.submit(_fetch_sub, s) for s in sitemap_urls[:10]]
+                # Large stores split sitemaps across many files (some 30+).
+                # Cap at 30 to balance coverage vs. cold-start latency.
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    futures = [pool.submit(_fetch_sub, s) for s in sitemap_urls[:30]]
                     for f in as_completed(futures):
                         r = f.result()
                         if r is not None:
@@ -1894,11 +1898,24 @@ class SitemapProductIndex:
                     if loc.endswith("]]>"):
                         loc = loc[:-3]
 
-                    # Only product-like URLs (have .html, /products/, or multi-segment path)
+                    # Only product-like URLs. Accept:
+                    # - .html / .htm endings (Magento default)
+                    # - /products/ or /product/ paths
+                    # - multi-segment paths (≥ 2 slashes)
+                    # - single-segment slugs WITH hyphens (typical product slug
+                    #   like /monin-piure-de-fructe-lychee-1l on Magento sites
+                    #   that put products at root)
                     path = urlparse(loc).path
-                    if not (path.endswith(".html") or path.endswith(".htm")
-                            or "/products/" in path or "/product/" in path
-                            or path.count("/") >= 2):
+                    last_seg = path.rstrip("/").rsplit("/", 1)[-1]
+                    is_product_like = (
+                        path.endswith(".html") or path.endswith(".htm")
+                        or "/products/" in path or "/product/" in path
+                        or path.count("/") >= 2
+                        # Single-segment slug that LOOKS like a product:
+                        # has at least 3 hyphens AND length ≥ 15 chars
+                        or (last_seg.count("-") >= 3 and len(last_seg) >= 15)
+                    )
+                    if not is_product_like:
                         continue
                     # Skip category/info pages
                     if any(skip in path for skip in ["/contact", "/blog", "/info",
@@ -1946,11 +1963,202 @@ class SitemapProductIndex:
         return products
 
     @classmethod
+    def _fetch_all_urls(cls, domain: str) -> list[str]:
+        """Fetch sitemap and return ALL <loc> URLs (no product/category filtering).
+        Used by get_categories() to find listing pages.
+        """
+        with cls._lock:
+            if domain in cls._all_urls_cache:
+                return cls._all_urls_cache[domain]
+
+        import xml.etree.ElementTree as ET
+        import gzip
+        urls: list[str] = []
+        base = f"https://{domain}"
+
+        try:
+            resp = requests.get(f"{base}/sitemap.xml", timeout=10,
+                                headers={"User-Agent": USER_AGENT}, allow_redirects=True)
+            if resp.status_code != 200:
+                with cls._lock:
+                    cls._all_urls_cache[domain] = []
+                return []
+
+            def _parse(content):
+                try:
+                    raw = gzip.decompress(content)
+                except Exception:
+                    raw = content
+                return ET.fromstring(raw)
+
+            def _find(el, tag, ns):
+                results = el.findall(f".//sm:{tag}", ns)
+                if not results:
+                    results = el.findall(f".//{tag}")
+                if not results:
+                    results = el.findall(f".//{{{ns['sm']}}}{tag}")
+                return results
+
+            ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+            root = _parse(resp.content)
+
+            sitemap_urls = []
+            for sitemap_el in _find(root, "sitemap", ns):
+                loc_el = sitemap_el.find("sm:loc", ns)
+                if loc_el is None:
+                    loc_el = sitemap_el.find("loc")
+                if loc_el is not None and loc_el.text:
+                    sitemap_urls.append(loc_el.text.strip())
+
+            all_roots = [root] if not sitemap_urls else []
+            if sitemap_urls:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                def _fetch_sub(surl):
+                    try:
+                        sr = requests.get(surl, timeout=10,
+                                          headers={"User-Agent": USER_AGENT}, allow_redirects=True)
+                        if sr.status_code == 200:
+                            return _parse(sr.content)
+                    except Exception:
+                        pass
+                    return None
+                # Large stores split sitemaps across many files (some 30+).
+                # Cap at 30 to balance coverage vs. cold-start latency.
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    futures = [pool.submit(_fetch_sub, s) for s in sitemap_urls[:30]]
+                    for f in as_completed(futures):
+                        r = f.result()
+                        if r is not None:
+                            all_roots.append(r)
+
+            for sroot in all_roots:
+                for url_el in _find(sroot, "url", ns):
+                    loc_el = url_el.find("sm:loc", ns)
+                    if loc_el is None:
+                        loc_el = url_el.find("loc")
+                    if loc_el is None or loc_el.text is None:
+                        continue
+                    loc = loc_el.text.strip()
+                    if loc.startswith("<![CDATA["):
+                        loc = loc[9:]
+                    if loc.endswith("]]>"):
+                        loc = loc[:-3]
+                    urls.append(loc)
+        except Exception as e:
+            logger.debug(f"[SITEMAP] {domain}: _fetch_all_urls failed: {e}")
+
+        with cls._lock:
+            cls._all_urls_cache[domain] = urls
+        return urls
+
+    @classmethod
+    def get_categories(cls, domain: str) -> list[str]:
+        """
+        Identify category landing URLs from a site's sitemap by detecting URLs
+        that act as parent-prefix for many other URLs (= category pages with
+        product listings underneath them).
+
+        Returns category URLs sorted by descending child-count (most populated first).
+        Capped at 50 to bound memory/ranking work.
+        """
+        with cls._lock:
+            if domain in cls._categories_cache:
+                return cls._categories_cache[domain]
+
+        all_urls = cls._fetch_all_urls(domain)
+        if not all_urls:
+            with cls._lock:
+                cls._categories_cache[domain] = []
+            return []
+
+        # Build a set of all paths and a parent-count map.
+        # For each URL path, every prefix path (other than itself) gets +1.
+        url_paths = []
+        for u in all_urls:
+            try:
+                p = urlparse(u).path.rstrip("/")
+                if p and p != "/":
+                    url_paths.append((u, p))
+            except Exception:
+                continue
+
+        path_set = {p for _, p in url_paths}
+        parent_count: dict[str, int] = {}
+        for _, path in url_paths:
+            segments = path.split("/")
+            # Build all prefix paths
+            for i in range(1, len(segments)):
+                prefix = "/".join(segments[:i + 1])
+                if prefix and prefix != path and prefix in path_set:
+                    parent_count[prefix] = parent_count.get(prefix, 0) + 1
+
+        # Heuristic filters
+        _BLACKLIST_SEG = {
+            "cart", "checkout", "account", "wishlist", "compare",
+            "blog", "news", "contact", "info", "tag", "tags", "search",
+            "brands", "producator", "manufacturer", "login", "register",
+            "static", "media", "pages", "cms", "pagina", "page",
+            "category", "categories",  # generic — usually too broad
+        }
+
+        candidates: list[tuple[str, int]] = []
+        for u in all_urls:
+            try:
+                parsed = urlparse(u)
+            except Exception:
+                continue
+            path = parsed.path.rstrip("/")
+            if not path or path == "/":
+                continue
+            if path.lower().endswith(".html") or path.lower().endswith(".htm"):
+                continue
+            if len(path) > 60:
+                continue
+            segments = [s for s in path.split("/") if s]
+            if not (1 <= len(segments) <= 3):
+                continue
+            seg_lower = [s.lower() for s in segments]
+            if any(s in _BLACKLIST_SEG for s in seg_lower):
+                continue
+            # Wordy segments only — no numeric IDs ≥4 chars
+            if any(re.fullmatch(r"\d{4,}", s) for s in segments):
+                continue
+            if not all(re.fullmatch(r"[a-z0-9_-]+", s.lower()) for s in segments):
+                continue
+            count = parent_count.get(path, 0)
+            if count < 3:
+                continue
+            candidates.append((u, count))
+
+        # Sort by parent_count descending, dedupe by path
+        seen_paths: set[str] = set()
+        sorted_candidates: list[str] = []
+        for url, _ in sorted(candidates, key=lambda x: -x[1]):
+            try:
+                p = urlparse(url).path.rstrip("/")
+            except Exception:
+                continue
+            if p in seen_paths:
+                continue
+            seen_paths.add(p)
+            sorted_candidates.append(url)
+            if len(sorted_candidates) >= 50:
+                break
+
+        with cls._lock:
+            cls._categories_cache[domain] = sorted_candidates
+        if sorted_candidates:
+            logger.info(f"[SITEMAP-CAT] {domain}: identified {len(sorted_candidates)} category candidates")
+        return sorted_candidates
+
+    @classmethod
     def find_matches(cls, domain: str, product_name: str, max_results: int = 3) -> list[dict]:
         """Find best matching products from sitemap index using token scoring."""
         products = cls.get_products(domain)
         if not products:
+            print(f"[SITEMAP] {domain}: empty product index, no matches possible")
             return []
+        print(f"[SITEMAP] {domain}: searching {len(products)} indexed products for '{product_name[:50]}'")
 
         # Tokenize the product name
         name_lower = product_name.lower()
@@ -1973,20 +2181,13 @@ class SitemapProductIndex:
                 if len(brand_tokens) >= 2:
                     break  # max 2 brand tokens
 
-        # RO→EN translations for slug matching
-        ro_en = {"ciocolata": "ciocolata", "calda": "calda", "cafea": "cafea",
-                 "ceai": "ceai", "lapte": "lapte", "alune": "alune",
-                 "padure": "padure", "portocale": "portocale", "scortisoara": "scortisoara",
-                 "cocos": "coconut", "capsuni": "strawberry", "afine": "blueberry",
-                 "cirese": "cherry", "mango": "mango", "vanilie": "vanilla",
-                 "caramel": "caramel", "alb": "white", "alba": "white",
-                 "negru": "dark", "neagra": "dark"}
-
-        # Expand tokens with EN variants
+        # Expand tokens with all known RO/EN variants from the global map.
+        # This allows matching e.g. "Piure Monin Litche" against
+        # "monin-piure-de-fructe-lychee-1l" (litche → lychee).
         expanded = set(tokens)
         for t in tokens:
-            if t in ro_en:
-                expanded.add(ro_en[t])
+            for v in get_word_variants(t):
+                expanded.add(v.lower())
 
         scored = []
         for prod in products:
@@ -2069,6 +2270,365 @@ class DirectSiteScraper:
         self.ai_matcher = ai_matcher
         # Per-instance caches (reset per scraper instance)
         self._brand_page_cache = {}
+        # site → list[product dict] from Shopify /products.json (cached per scrape job)
+        # value of None means we already tried and confirmed it's not Shopify
+        self._shopify_products_cache: dict[str, Optional[list]] = {}
+        # category_url → list of {url, title, image} entries scraped from that page
+        self._category_page_cache: dict[str, Optional[list]] = {}
+        # domain → discovered category URL (from manual override OR breadcrumb OR sitemap).
+        # Each domain holds at most one URL — the first source to write wins.
+        # Thread-safe under GIL: each priority site uses a distinct key.
+        self._discovered_categories: dict[str, str] = {}
+
+    def set_category_paths(self, paths: dict[str, str]) -> None:
+        """
+        Seed the discovered-categories cache with user-supplied category paths.
+        Called once per job from run_scraper_job. Manual overrides win over
+        breadcrumb/sitemap discovery because the cache is checked first.
+        """
+        for domain, path in paths.items():
+            if not path:
+                continue
+            base = f"https://{domain}".rstrip("/")
+            cat_url = base + path
+            self._discovered_categories[domain] = cat_url
+            print(f"[CATEGORY-OVERRIDE] {domain}: seeded {cat_url}")
+
+    def _try_category_page(self, site: str, category_path: str, product_name: str,
+                            max_results: int = 5) -> list[dict]:
+        """
+        Scrape a user-supplied category/listing page and match a product against
+        all listed items. Avoids the site's search entirely — much faster and
+        more reliable than search for sites with broken/slow search endpoints.
+
+        category_path: "/apa-softdrinks/suc-acidulat" (path on the site)
+        Returns list of {"image": url, "title": ..., "source": "direct:site", "product_url": ...}
+        """
+        results = []
+        base_url = f"https://{site}" if not site.startswith("http") else site
+        category_url = base_url.rstrip("/") + category_path
+
+        # Fetch + cache the category page on first request
+        if category_url not in self._category_page_cache:
+            try:
+                resp = self.session.get(category_url, timeout=15)
+                if resp.status_code != 200:
+                    print(f"[CATEGORY] {category_url}: HTTP {resp.status_code}")
+                    self._category_page_cache[category_url] = None
+                    return []
+                # Extract product entries (links + titles) from the page
+                entries = self._extract_product_entries(resp.text, base_url)
+                # Decode HTML entities in titles (Magento often emits &#x20; etc.)
+                import html as _html
+                for e in entries:
+                    if e.get("title"):
+                        e["title"] = _html.unescape(e["title"])
+                    if e.get("alt"):
+                        e["alt"] = _html.unescape(e["alt"])
+                    if e.get("all_text"):
+                        e["all_text"] = _html.unescape(e["all_text"])
+                if not entries:
+                    print(f"[CATEGORY] {category_url}: no product entries found")
+                    self._category_page_cache[category_url] = None
+                    return []
+                self._category_page_cache[category_url] = entries
+                print(f"[CATEGORY] {category_url}: cached {len(entries)} entries")
+            except Exception as e:
+                logger.warning(f"[CATEGORY] {category_url}: fetch failed: {e}")
+                self._category_page_cache[category_url] = None
+                return []
+
+        all_entries = self._category_page_cache.get(category_url)
+        if not all_entries:
+            return []
+
+        # Filter by distinctive words from product name (ignoring only GENERIC type/packaging
+        # words; brand+flavor terms remain distinctive — we expand each to RO+EN variants).
+        if product_name:
+            distinctive = _distinctive_words(product_name)
+            if distinctive:
+                # Pre-compute RO/EN variants for each distinctive word.
+                dist_with_variants = {w: _word_variants_set(w) for w in distinctive}
+
+                def _matches_all(text: str) -> bool:
+                    return all(any(v in text for v in variants)
+                               for variants in dist_with_variants.values())
+
+                def _match_count(text: str) -> int:
+                    return sum(1 for variants in dist_with_variants.values()
+                               if any(v in text for v in variants))
+
+                strict = [e for e in all_entries
+                          if _matches_all(f"{e.get('title', '')} {e.get('url', '')}".lower())]
+                if strict:
+                    entries = strict
+                    print(f"[CATEGORY] strict filter → {len(entries)} of {distinctive}")
+                else:
+                    best_count = 0
+                    for e in all_entries:
+                        best_count = max(best_count,
+                                         _match_count(f"{e.get('title', '')} {e.get('url', '')}".lower()))
+                    if best_count > 0:
+                        entries = [e for e in all_entries
+                                   if _match_count(f"{e.get('title', '')} {e.get('url', '')}".lower()) >= best_count]
+                        print(f"[CATEGORY] relaxed filter → {len(entries)} ({best_count}/{len(distinctive)} of {distinctive})")
+                    else:
+                        print(f"[CATEGORY] no entries match {distinctive}")
+                        return []
+            else:
+                entries = all_entries[:20]
+        else:
+            entries = all_entries[:20]
+
+        if not entries:
+            return []
+
+        # Use AI matcher to pick best entry
+        best = None
+        if self.ai_matcher and product_name:
+            ai_matches = self.ai_matcher.match(product_name, entries, max_results=1)
+            if ai_matches:
+                best = ai_matches[0]
+        if not best:
+            # Without AI matcher: rank by distinctive-word coverage (with RO/EN
+            # variants), then by title length. Falls back to entries[0].
+            if product_name:
+                pn_distinctive = _distinctive_words(product_name)
+                pn_variants = {w: _word_variants_set(w) for w in pn_distinctive}
+                def _score(e):
+                    text = f"{e.get('title', '')} {e.get('url', '')}".lower()
+                    return sum(1 for variants in pn_variants.values()
+                               if any(v in text for v in variants))
+                ranked = sorted(entries, key=lambda e: (-_score(e), len(e.get('title', ''))))
+                best = ranked[0] if ranked else entries[0]
+            else:
+                best = entries[0]
+
+        if product_name:
+            if url_has_conflicting_product(best.get("url", ""), product_name):
+                print(f"[CATEGORY] SKIP conflicting URL: {best.get('url', '')[:80]}")
+                return []
+            if best.get("title") and url_has_conflicting_product(best["title"], product_name):
+                print(f"[CATEGORY] SKIP conflicting TITLE: '{best['title'][:80]}'")
+                return []
+
+        print(f"[CATEGORY] best='{best.get('title', '')[:60]}' → {best.get('url', '')}")
+
+        # Extract images from the matched product page
+        extra_images: list[str] = []
+        try:
+            extra_images = self._extract_product_images(best["url"], base_url)
+        except Exception as e:
+            logger.debug(f"[CATEGORY] image extraction failed: {e}")
+        for img_url in extra_images[:max_results]:
+            results.append({
+                "image": img_url,
+                "title": best.get("title", ""),
+                "source": f"direct:{site}",
+                "product_url": best["url"],
+            })
+        # Fall back to category-page thumbnail if product page yielded no images
+        # (covers both exception path and empty-result path — e.g. JS-rendered galleries)
+        if not results and best.get("image"):
+            results.append({
+                "image": best["image"],
+                "title": best.get("title", ""),
+                "source": f"direct:{site}",
+                "product_url": best["url"],
+            })
+
+        return results[:max_results]
+
+    def _try_sitemap_category(self, site: str, product_name: str, query: str,
+                               max_results: int = 5) -> tuple[list[dict], Optional[str]]:
+        """
+        Find a relevant category page by mining the site's sitemap, then
+        match the product against the listing on that category page.
+
+        Returns (image_results, matched_category_url). Caller can use the URL
+        to populate `_discovered_categories` for subsequent products.
+        """
+        domain = urlparse(f"https://{site}").netloc.lstrip("www.")
+        cat_urls = SitemapProductIndex.get_categories(domain)
+        if not cat_urls:
+            return [], None
+
+        # Score categories by token overlap between path segments and product name
+        name_lower = (product_name or query or "").lower()
+        name_tokens = set(re.findall(r"[a-z]{3,}", name_lower))
+        # Translate RO words to EN to widen matching (e.g. "cafea" → "coffee")
+        en_tokens = set()
+        for tok in name_tokens:
+            if tok in _RO_EN_MAP:
+                for variant in _RO_EN_MAP[tok].split():
+                    en_tokens.add(variant.lower())
+        all_tokens = name_tokens | en_tokens
+        if not all_tokens:
+            return [], None
+
+        scored: list[tuple[int, str]] = []
+        for cat_url in cat_urls:
+            try:
+                path = urlparse(cat_url).path.lower()
+            except Exception:
+                continue
+            # Tokenize path segments
+            path_tokens = set(re.findall(r"[a-z]{3,}", path.replace("-", " ").replace("/", " ")))
+            score = len(all_tokens & path_tokens)
+            if score > 0:
+                scored.append((score, cat_url))
+
+        if not scored:
+            return [], None
+
+        # Try top 3 scoring categories
+        scored.sort(key=lambda x: -x[0])
+        for _, cat_url in scored[:3]:
+            cat_path = urlparse(cat_url).path
+            print(f"[SITEMAP-CAT] {domain}: trying category {cat_path}")
+            results = self._try_category_page(site, cat_path, product_name or query, max_results)
+            if results:
+                return results, cat_url
+
+        return [], None
+
+    def _try_shopify_products_json(self, site: str, query: str, product_name: str,
+                                    max_results: int = 5) -> list[dict]:
+        """
+        Try Shopify's standard /products.json endpoint. Many Shopify stores
+        have broken/fuzzy default search that returns irrelevant products,
+        but /products.json reliably exposes the full catalog.
+
+        Caches the full catalog per site for the lifetime of this scraper instance.
+        Returns list of {"image": url, "title": ..., "source": "direct:site", "product_url": ...}
+        """
+        results = []
+        base_url = f"https://{site}" if not site.startswith("http") else site
+
+        # Fetch + cache catalog on first request per site
+        if site not in self._shopify_products_cache:
+            all_products = []
+            try:
+                for page in range(1, 10):  # cap at ~2500 products
+                    url = f"{base_url.rstrip('/')}/products.json?limit=250&page={page}"
+                    resp = self.session.get(url, timeout=8)
+                    if resp.status_code != 200:
+                        break
+                    data = resp.json()
+                    products = data.get("products", [])
+                    if not products:
+                        break
+                    all_products.extend(products)
+                    if len(products) < 250:
+                        break
+                if all_products:
+                    self._shopify_products_cache[site] = all_products
+                    print(f"[SHOPIFY-JSON] {site}: cached {len(all_products)} products")
+                else:
+                    self._shopify_products_cache[site] = None
+            except Exception as e:
+                logger.debug(f"[SHOPIFY-JSON] {site}: fetch failed: {e}")
+                self._shopify_products_cache[site] = None
+
+        all_products = self._shopify_products_cache.get(site)
+        if not all_products:
+            return []
+
+        # Build entries from catalog
+        entries = []
+        for p in all_products:
+            title = p.get("title", "")
+            handle = p.get("handle", "")
+            if not handle:
+                continue
+            product_url = f"{base_url.rstrip('/')}/products/{handle}"
+            # Best image (first non-empty)
+            img_src = ""
+            for img in p.get("images", []):
+                if img.get("src"):
+                    img_src = img["src"]
+                    break
+            entries.append({
+                "url": product_url, "title": title, "image": img_src,
+                "alt": title, "all_text": title,
+            })
+
+        # Filter by distinctive words with RO/EN variants
+        if product_name:
+            distinctive = _distinctive_words(product_name)
+            if distinctive:
+                dist_with_variants = {w: _word_variants_set(w) for w in distinctive}
+                def _matches_all(text: str) -> bool:
+                    return all(any(v in text for v in variants)
+                               for variants in dist_with_variants.values())
+                def _match_count(text: str) -> int:
+                    return sum(1 for variants in dist_with_variants.values()
+                               if any(v in text for v in variants))
+
+                strict = [e for e in entries
+                          if _matches_all(f"{e['title']} {e['url']}".lower())]
+                if strict:
+                    entries = strict
+                    print(f"[SHOPIFY-JSON] {site}: strict filter → {len(entries)} of {distinctive}")
+                else:
+                    best_count = 0
+                    for e in entries:
+                        best_count = max(best_count,
+                                         _match_count(f"{e['title']} {e['url']}".lower()))
+                    if best_count > 0:
+                        entries = [e for e in entries
+                                   if _match_count(f"{e['title']} {e['url']}".lower()) >= best_count]
+                        print(f"[SHOPIFY-JSON] {site}: relaxed filter → {len(entries)} ({best_count}/{len(distinctive)} of {distinctive})")
+                    else:
+                        print(f"[SHOPIFY-JSON] {site}: no entries match {distinctive}")
+                        return []
+
+        if not entries:
+            return []
+
+        # Use AI matcher to pick best entry
+        best = None
+        if self.ai_matcher and product_name:
+            ai_matches = self.ai_matcher.match(product_name, entries, max_results=1)
+            if ai_matches:
+                best = ai_matches[0]
+        if not best:
+            best = entries[0]
+
+        # Conflict check
+        if product_name:
+            if url_has_conflicting_product(best["url"], product_name):
+                print(f"[SHOPIFY-JSON] SKIP conflicting URL: {best['url'][:80]}")
+                return []
+            if best.get("title") and url_has_conflicting_product(best["title"], product_name):
+                print(f"[SHOPIFY-JSON] SKIP conflicting TITLE: '{best['title'][:80]}'")
+                return []
+
+        print(f"[SHOPIFY-JSON] {site}: best='{best['title']}' → {best['url']}")
+
+        # Use the catalog image directly + extract more from product page
+        if best.get("image"):
+            results.append({
+                "image": best["image"],
+                "title": best["title"],
+                "source": f"direct:{site}",
+                "product_url": best["url"],
+            })
+        # Also extract additional images from product page
+        try:
+            extra_images = self._extract_product_images(best["url"], base_url)
+            for img_url in extra_images[:max_results]:
+                if not any(r.get("image") == img_url for r in results):
+                    results.append({
+                        "image": img_url,
+                        "title": best["title"],
+                        "source": f"direct:{site}",
+                        "product_url": best["url"],
+                    })
+        except Exception:
+            pass
+
+        return results[:max_results]
 
     def _try_searchanise_api(self, site: str, query: str, product_name: str,
                              max_results: int = 5) -> list[dict]:
@@ -2083,7 +2643,7 @@ class DirectSiteScraper:
         # Get or discover Searchanise API key and host for this site
         if site not in self._searchanise_keys:
             try:
-                resp = self.session.get(base_url, timeout=6)
+                resp = self.session.get(base_url, timeout=12)
                 # Look for Searchanise config: {"host":"https://searchserverapi.com","api_key":"..."}
                 import re as _re
                 # Pattern: "api_key":"ALPHANUMERIC" near "Searchanise" or "searchserverapi"
@@ -2118,7 +2678,7 @@ class DirectSiteScraper:
         search_q = product_name or query
         api_url = f"{api_host}/getresults?api_key={api_key}&q={requests.utils.quote(search_q)}&maxResults=10"
         try:
-            resp = self.session.get(api_url, timeout=6)
+            resp = self.session.get(api_url, timeout=12)
             if resp.status_code != 200:
                 return []
 
@@ -2231,6 +2791,22 @@ class DirectSiteScraper:
         # Track if site had results but all were wrong type (for caching)
         _site_had_results_but_all_wrong = False
 
+        # === PHASE 0: Cached category page (manual override OR breadcrumb-discovered) ===
+        # When _discovered_categories[domain] is set (by set_category_paths or by a
+        # prior product's breadcrumb), match this product against the listing on
+        # that single page in one HTTP request. Skip the rest of the pipeline on hit.
+        domain_key = domain.lstrip("www.") or site.lstrip("www.")
+        discovered = self._discovered_categories.get(domain_key)
+        if discovered:
+            try:
+                cat_path = urlparse(discovered).path
+                cat_results = self._try_category_page(site, cat_path, product_name or query, max_results)
+                if cat_results:
+                    print(f"[CATEGORY-CACHE] {domain_key}: hit {discovered} → {len(cat_results)} results")
+                    return cat_results
+            except Exception as e:
+                logger.debug(f"[CATEGORY-CACHE] {domain_key}: failed: {e}")
+
         # === Run Searchanise API and pattern search IN PARALLEL ===
         # This eliminates cold-start penalty: Searchanise discovery (homepage fetch)
         # used to block ~3-6s before pattern search could start. Now both run at once.
@@ -2245,7 +2821,7 @@ class DirectSiteScraper:
                 logger.info(f"[ROBOTS] {domain} disallows {pattern.split('?')[0]}, skipping")
                 return (pattern, None)
             try:
-                resp = self.session.get(search_url, timeout=6)
+                resp = self.session.get(search_url, timeout=12)
                 if resp.status_code == 200:
                     return (pattern, resp)
             except Exception as e:
@@ -2253,26 +2829,35 @@ class DirectSiteScraper:
             return (pattern, None)
 
         sa_results_holder = [None]  # mutable container for thread result
+        shopify_results_holder = [None]
 
         def _fetch_searchanise():
             """Try Searchanise API in parallel with pattern search."""
             sa_results_holder[0] = self._try_searchanise_api(site, query, product_name, max_results)
 
+        def _fetch_shopify():
+            """Try Shopify /products.json in parallel with pattern search."""
+            shopify_results_holder[0] = self._try_shopify_products_json(site, query, product_name, max_results)
+
         pattern_responses = {}
-        with ThreadPoolExecutor(max_workers=min(len(self.SEARCH_PATTERNS) + 1, 10)) as pool:
-            # Submit Searchanise discovery + all patterns at once
+        with ThreadPoolExecutor(max_workers=min(len(self.SEARCH_PATTERNS) + 2, 12)) as pool:
+            # Submit Searchanise + Shopify discovery + all patterns at once
             sa_future = pool.submit(_fetch_searchanise)
+            shopify_future = pool.submit(_fetch_shopify)
             futures = {pool.submit(_fetch_pattern, p): p for p in self.SEARCH_PATTERNS}
             # Wait for all pattern responses
             for future in as_completed(futures):
                 pattern, resp = future.result()
                 pattern_responses[pattern] = resp
-            # Also wait for Searchanise
             sa_future.result()
+            shopify_future.result()
 
         # Check Searchanise results first (most reliable when available)
         if sa_results_holder[0]:
             return sa_results_holder[0]
+        # Then Shopify products.json — also very reliable for Shopify stores
+        if shopify_results_holder[0]:
+            return shopify_results_holder[0]
 
         # Process responses in original pattern priority order
         for pattern in self.SEARCH_PATTERNS:
@@ -2494,6 +3079,21 @@ class DirectSiteScraper:
                 logger.debug(f"Direct scrape error for {site}: {e}")
                 continue
 
+        # === SITEMAP CATEGORY FALLBACK: identify a category page from sitemap ===
+        # Mine the sitemap for category landings, score by token overlap with the
+        # product name, then match against the best-scoring category's listing.
+        if not results:
+            try:
+                sm_cat_results, matched_cat_url = self._try_sitemap_category(
+                    site, product_name or query, query, max_results)
+                if sm_cat_results:
+                    if matched_cat_url and domain_key not in self._discovered_categories:
+                        self._discovered_categories[domain_key] = matched_cat_url
+                        print(f"[SITEMAP-CAT] {domain_key}: cached discovered {matched_cat_url}")
+                    results.extend(sm_cat_results)
+            except Exception as e:
+                logger.debug(f"[SITEMAP-CAT] {domain}: failed: {e}")
+
         # === SITEMAP FALLBACK: search sitemap index for matching product URLs ===
         if not results:
             try:
@@ -2636,7 +3236,7 @@ class DirectSiteScraper:
 
                 # Check page title for conflict
                 try:
-                    resp = self.session.get(purl, timeout=6)
+                    resp = self.session.get(purl, timeout=12)
                     if resp.status_code != 200:
                         continue
                     title_m = re.search(r'<title[^>]*>([^<]+)', resp.text, re.IGNORECASE)
@@ -2715,7 +3315,7 @@ class DirectSiteScraper:
                         entries, effective_base = cached
                         print(f"[BRAND] Brand page {url} → {len(entries)} entries (CACHED)")
                     else:
-                        resp = self.session.get(url, timeout=6)
+                        resp = self.session.get(url, timeout=12)
                         if resp.status_code != 200:
                             self._brand_page_cache[cache_key] = ([], "")
                             continue
@@ -3923,11 +4523,25 @@ class DirectSiteScraper:
     def _extract_product_images(self, product_url: str, base_url: str) -> list[str]:
         """Extract main product image(s) from a product page."""
         try:
-            resp = self.session.get(product_url, timeout=6)
+            resp = self.session.get(product_url, timeout=12)
             if resp.status_code != 200:
                 return []
         except Exception:
             return []
+
+        # ── Opportunistic breadcrumb category discovery ──
+        # Every successful product page fetch tries to extract its parent category.
+        # First success wins per domain; manual overrides (seeded via set_category_paths)
+        # are never overwritten thanks to the "domain not in" guard.
+        try:
+            domain = urlparse(base_url).netloc.lstrip("www.")
+            if domain and domain not in self._discovered_categories:
+                cat_url = self._extract_breadcrumb_category(resp.text, base_url, product_url)
+                if cat_url:
+                    self._discovered_categories[domain] = cat_url
+                    print(f"[BREADCRUMB] {domain}: discovered category {cat_url}")
+        except Exception:
+            pass
 
         images = []
         seen = set()
@@ -4125,6 +4739,166 @@ class DirectSiteScraper:
         if images:
             return images[:1]  # Return best single image
         return []
+
+    def _extract_breadcrumb_category(self, html: str, base_url: str,
+                                     product_url: str) -> Optional[str]:
+        """
+        Extract the parent category URL from a product page's breadcrumb trail.
+        Returns absolute URL of the second-to-last breadcrumb item (the deepest
+        category, with the last item being the product itself), or None.
+
+        Tries three strategies in order: JSON-LD BreadcrumbList, HTML breadcrumb
+        element, microdata. Best-effort — silently returns None on any failure.
+        """
+        _BLACKLIST_PATH_TOKENS = (
+            "/promo", "/promotion", "/sale", "/oferta", "/reduceri", "/cart",
+            "/checkout", "/account", "/wishlist", "/compare", "/blog", "/news",
+            "/contact", "/info", "/search", "/page/", "/cms", "/login", "/register",
+        )
+
+        def _validate(href: str) -> Optional[str]:
+            if not href:
+                return None
+            abs_url = self._make_absolute(href, base_url)
+            if not abs_url:
+                return None
+            if abs_url.rstrip("/") == product_url.rstrip("/"):
+                return None
+            if abs_url.rstrip("/") == base_url.rstrip("/"):
+                return None
+            try:
+                p = urlparse(abs_url)
+            except Exception:
+                return None
+            if not self._domains_match(p.netloc, urlparse(base_url).netloc):
+                return None
+            path = p.path.rstrip("/")
+            if not path or path == "/":
+                return None
+            if any(tok in path.lower() for tok in _BLACKLIST_PATH_TOKENS):
+                return None
+            segments = [s for s in path.split("/") if s]
+            if len(segments) < 1 or len(segments) > 3:
+                return None
+            if len(path) > 60:
+                return None
+            # Reject URLs that look like product slugs:
+            # products usually have many hyphens AND contain numbers/sizes
+            # (e.g. "fentimans-connoisseurs-tonic-water-4-bucati-x-0-2-l")
+            last_seg = segments[-1]
+            hyphens = last_seg.count("-")
+            has_size_pattern = bool(re.search(r"\d+\s*-?\s*(?:bucati|buc|ml|l|kg|g|cl)\b",
+                                              last_seg, re.IGNORECASE))
+            if hyphens >= 5 or has_size_pattern:
+                return None
+            # Strip query string — filter URLs aren't useful as category landings
+            return abs_url.split("?")[0]
+
+        # ── Strategy 1: JSON-LD BreadcrumbList ──
+        try:
+            for m in re.finditer(
+                r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                html, re.DOTALL | re.IGNORECASE
+            ):
+                try:
+                    blob = json.loads(m.group(1).strip())
+                except Exception:
+                    continue
+                # JSON-LD can be an object or a list
+                candidates = blob if isinstance(blob, list) else [blob]
+                # Also handle @graph wrapping
+                for c in list(candidates):
+                    if isinstance(c, dict) and "@graph" in c:
+                        candidates.extend(c["@graph"])
+                for c in candidates:
+                    if not isinstance(c, dict):
+                        continue
+                    if c.get("@type") != "BreadcrumbList":
+                        continue
+                    items = c.get("itemListElement") or []
+                    if not isinstance(items, list) or len(items) < 2:
+                        continue
+                    # Sort by position if available
+                    def _pos(it):
+                        try:
+                            return int(it.get("position", 999))
+                        except Exception:
+                            return 999
+                    items_sorted = sorted(items, key=_pos)
+                    # Second-to-last item is the parent category
+                    parent = items_sorted[-2]
+                    if not isinstance(parent, dict):
+                        continue
+                    href = ""
+                    item = parent.get("item")
+                    if isinstance(item, dict):
+                        href = item.get("@id") or item.get("url") or ""
+                    elif isinstance(item, str):
+                        href = item
+                    if not href:
+                        href = parent.get("@id") or parent.get("url") or ""
+                    valid = _validate(href)
+                    if valid:
+                        return valid
+        except Exception:
+            pass
+
+        # ── Strategy 2: HTML breadcrumb (Magento, generic) ──
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            selectors = [
+                "ol.breadcrumbs", "ul.breadcrumb", "nav.breadcrumb",
+                "div.breadcrumbs", "div.breadcrumb",
+                '[class*="breadcrumb"]',
+            ]
+            for sel in selectors:
+                container = soup.select_one(sel)
+                if not container:
+                    continue
+                anchors = container.find_all("a", href=True)
+                if not anchors:
+                    continue
+                # The current page is usually NOT an <a> (it's a <span> or <strong>).
+                # The last <a> is therefore the parent category.
+                # Walk from the end, validate, return first valid one.
+                for a in reversed(anchors):
+                    href = a.get("href", "").strip()
+                    valid = _validate(href)
+                    if valid:
+                        return valid
+        except Exception:
+            pass
+
+        # ── Strategy 3: schema.org microdata ──
+        try:
+            soup  # may not be defined if Strategy 2 raised early
+        except NameError:
+            try:
+                soup = BeautifulSoup(html, "html.parser")
+            except Exception:
+                return None
+        try:
+            container = soup.select_one('[itemtype*="BreadcrumbList"]')
+            if container:
+                items = container.select('[itemprop="itemListElement"]')
+                if len(items) >= 2:
+                    def _pos2(it):
+                        meta = it.find("meta", attrs={"itemprop": "position"})
+                        try:
+                            return int(meta.get("content", "999")) if meta else 999
+                        except Exception:
+                            return 999
+                    items_sorted = sorted(items, key=_pos2)
+                    parent = items_sorted[-2]
+                    a = parent.find("a", attrs={"itemprop": "item"})
+                    if a and a.get("href"):
+                        valid = _validate(a["href"])
+                        if valid:
+                            return valid
+        except Exception:
+            pass
+
+        return None
 
     def _try_upscale_url(self, url: str) -> str:
         """Try to get a larger version of an image by replacing size patterns in URL.
@@ -4447,6 +5221,13 @@ def url_has_conflicting_product(url: str, product_name: str) -> bool:
 
     Returns True if a conflict is detected (image is likely wrong product).
     """
+    # Decode HTML entities first — many sites emit titles like
+    # "Fentimans&#x20;Oriental&#x20;Yuzu..." (Magento default). The '#' inside
+    # those entities breaks urlparse() below (it treats '#' as fragment delimiter)
+    # and silently drops everything after the first '#'.
+    import html as _html
+    url = _html.unescape(url)
+    product_name = _html.unescape(product_name)
     # Include parenthetical text as it often contains the flavor/variant
     # e.g. "Pireu MONIN Fructe de Padure (Red Berries) 1L" — "Red Berries" IS the identity
     url_lower = url.lower().replace("-", " ").replace("_", " ").replace("%20", " ")
@@ -4735,6 +5516,8 @@ _RO_EN_MAP = {
     "smochine": "fig",
     "rodii": "pomegranate",
     "trandafir": "rose",
+    "litche": "lychee",
+    "litchi": "lychee",
     "lavanda": "lavender",
     "fructul": "fruit",
     "pasiunii": "passion",
@@ -4847,6 +5630,44 @@ def get_word_variants(word: str) -> set[str]:
     """
     _build_word_variants_map()
     return _WORD_VARIANTS_CACHE.get(word.lower(), {word.lower()})
+
+
+# Generic words to skip when computing distinctive (brand+flavor) tokens.
+# Keep this NARROW: only true generic terms — product types, packaging, sizes.
+# Brand names and flavor terms (banana, lychee, etc.) must remain distinctive.
+_GENERIC_SKIP_WORDS = {
+    # Product types
+    "ceai", "tea", "cafea", "coffee", "boabe", "beans",
+    "sirop", "syrup", "piure", "pireu", "puree",
+    "suc", "juice", "apa", "water", "limonade", "limonada", "lemonade",
+    "tonic", "lapte", "milk", "bere", "beer", "vin", "wine",
+    "sos", "sauce", "gem", "jam", "ulei", "oil", "miere", "honey",
+    "ciocolata", "chocolate", "compote", "compot",
+    # Packaging / size descriptors
+    "capsule", "capsules", "capsula",
+    "plic", "plicuri", "pliculete", "cutie", "cutii", "pachet", "pachete",
+    "punga", "pungi", "borcan", "sticla", "flacon", "doza", "doze",
+    "tableta", "tablete", "portie", "ambalaj", "bidon",
+    "bucati", "bucata", "buc", "bax",
+    # Generic descriptors
+    "natural", "premium", "original", "classic", "clasic", "new", "nou",
+}
+
+
+def _distinctive_words(product_name: str) -> set[str]:
+    """Extract distinctive (brand + flavor + variant) tokens from a product name,
+    skipping only generic type/packaging words. Brand and flavor terms remain.
+    """
+    words = set(re.findall(r'[a-z]{4,}', product_name.lower()))
+    return {w for w in words if w not in _GENERIC_SKIP_WORDS}
+
+
+def _word_variants_set(word: str) -> set[str]:
+    """Get the lowercase set of variants for a word, including itself.
+    Wraps get_word_variants() and ensures the original word is always included.
+    """
+    variants = get_word_variants(word)
+    return {v.lower() for v in variants} | {word.lower()}
 
 
 def words_match(word1: str, word2: str) -> bool:
@@ -5242,14 +6063,29 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
     # Clean priority sites: extract domain from full URLs
     raw_sites = [s.strip() for s in config.get("priority_sites", []) if s.strip()]
     priority_sites = []
+    # domain → category path (if user provided one in priority_sites)
+    # Example: input "nitelashop.ro/apa-softdrinks/suc-acidulat" →
+    #   priority_sites=["nitelashop.ro"], category_paths={"nitelashop.ro": "/apa-softdrinks/suc-acidulat"}
+    category_paths: dict[str, str] = {}
     for site in raw_sites:
-        # Remove protocol and path, keep only domain
         s = site.replace("https://", "").replace("http://", "")
-        s = s.split("/")[0]  # Remove path
         s = s.split("?")[0]  # Remove query params
-        s = s.lstrip("www.")  # Optional: remove www
-        if s:
-            priority_sites.append(s)
+        # Split domain and path
+        if "/" in s:
+            domain, _, path = s.partition("/")
+            path = "/" + path.rstrip("/")
+            # A bare trailing slash (e.g. "nitelashop.ro/") leaves path="/",
+            # which would scrape the homepage as a category. Treat as no override.
+            if path == "/":
+                path = ""
+        else:
+            domain, path = s, ""
+        domain = domain.lstrip("www.")
+        if domain:
+            priority_sites.append(domain)
+            if path:
+                category_paths[domain] = path
+                print(f"[CATEGORY] {domain} → category page {path}")
 
     quality_checker = ImageQualityChecker({
         "min_resolution": config.get("min_resolution", 200),
@@ -5283,6 +6119,8 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
     bing_scraper = BingImageScraper()
     ai_matcher = AIProductMatcher(config.get("anthropic_key", ""))
     direct_scraper = DirectSiteScraper(ai_matcher=ai_matcher)
+    if category_paths:
+        direct_scraper.set_category_paths(category_paths)
     ddg = DuckDuckGoSearch()
     pexels = PexelsSearch(pexels_key)
 
