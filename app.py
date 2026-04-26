@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -6968,47 +6968,98 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
 
 # ─── FILE PARSERS ─────────────────────────────────────────────────────────
 
-def parse_uploaded_file(file_storage) -> Union[list[dict], list[str]]:
+# Header tokens recognized as the product-ID/code column.
+# Two tiers: SPECIFIC (allow partial-match) and GENERIC (exact-match only,
+# to avoid false positives like "id_furnizor" or "cod_client" being treated
+# as the product ID when the file has no real product-ID column).
+_ID_COLUMN_SPECIFIC = [
+    "id_produs", "cod_produs", "id produs", "cod produs",
+    "product_id", "product id", "productid",
+    "id_articol", "cod_articol", "id articol", "cod articol",
+    "cod_intern", "cod intern", "cod_hermes", "cod hermes",
+    "id_hermes", "id hermes",
+    "sku", "barcode", "ean", "upc",
+    "reference", "referinta", "referință",
+    "art_nr", "art nr", "artnr", "art_no", "art no",
+]
+# Generic short forms — accepted ONLY as exact match.
+_ID_COLUMN_GENERIC_EXACT_ONLY = ["id", "cod", "code", "nr"]
+
+
+def _detect_id_column(header: list) -> Optional[int]:
+    """Find the index of the product-ID/code column in a header row.
+    Strategy:
+      1. Exact match against any keyword (case-insensitive, diacritic-insensitive)
+      2. Partial match (word-boundary) only against SPECIFIC keywords —
+         generic ones like "id" and "cod" must match exactly to avoid
+         false positives like "id_furnizor" or "cod_client".
+    """
+    norm = [str(h).strip().lower().replace("ă", "a").replace("â", "a")
+            .replace("î", "i").replace("ș", "s").replace("ț", "t") for h in header]
+    all_keywords = _ID_COLUMN_SPECIFIC + _ID_COLUMN_GENERIC_EXACT_ONLY
+    # Tier 1 — exact match (covers both specific and generic)
+    for keyword in all_keywords:
+        if keyword in norm:
+            return norm.index(keyword)
+    # Tier 2 — partial word-boundary match, SPECIFIC keywords only
+    for keyword in _ID_COLUMN_SPECIFIC:
+        for i, h in enumerate(norm):
+            if h == keyword or h.startswith(keyword + " ") or h.endswith(" " + keyword) \
+               or h.startswith(keyword + "_") or h.endswith("_" + keyword) \
+               or f" {keyword} " in f" {h} ":
+                return i
+    return None
+
+
+def parse_uploaded_file(file_storage, forced_id_column: Optional[str] = None) -> dict:
     """
     Extract product data from uploaded file.
     Supports: .xlsx, .xls, .csv, .tsv, .txt, .docx, .pdf
 
-    For Excel/CSV with id/cod column: returns list of dicts {id, denumire}
-    For plain text/docx/pdf: returns list of product name strings.
+    Returns: {"products": list, "headers": list, "id_column": str or None}
+        - products: list of {id, denumire} dicts when an ID column is found,
+          otherwise list of plain strings (just product names).
+        - headers: tabular header row (empty list for non-tabular formats).
+        - id_column: header name actually used as ID column (None if no ID).
+
+    forced_id_column: if provided, override auto-detection and use this exact
+        header name as the ID column. Useful for letting the user pick the
+        column from a UI dropdown after seeing all headers.
     """
     filename = file_storage.filename.lower()
     data = file_storage.read()
 
     if filename.endswith((".xlsx", ".xls")):
-        return _parse_excel(data)
+        return _parse_excel(data, forced_id_column)
     elif filename.endswith(".csv"):
-        return _parse_csv(data, ",")
+        return _parse_csv(data, ",", forced_id_column)
     elif filename.endswith(".tsv"):
-        return _parse_csv(data, "\t")
+        return _parse_csv(data, "\t", forced_id_column)
     elif filename.endswith(".txt"):
-        return _parse_txt(data)
+        return {"products": _parse_txt(data), "headers": [], "id_column": None}
     elif filename.endswith(".docx"):
-        return _parse_docx(data)
+        return {"products": _parse_docx(data), "headers": [], "id_column": None}
     elif filename.endswith(".pdf"):
-        return _parse_pdf(data)
+        return {"products": _parse_pdf(data), "headers": [], "id_column": None}
     else:
         raise ValueError(f"Unsupported file type: {filename}")
 
 
-def _parse_excel(data: bytes) -> Union[list[dict], list[str]]:
-    """Parse .xlsx - extracts product data.
-    If an 'id'/'cod' column exists alongside 'denumire', returns list of dicts.
-    Otherwise returns list of product name strings (backward compatible).
+def _parse_excel(data: bytes, forced_id_column: Optional[str] = None) -> dict:
+    """Parse .xlsx — extracts product data.
+    Returns dict with products, headers (original capitalisation), and the
+    actual id_column name used.
     """
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
-        return []
+        return {"products": [], "headers": [], "id_column": None}
 
-    # Check header row for known column names
-    header = [str(c).lower().strip() if c else "" for c in rows[0]]
+    # Original (display) headers and normalized lookup
+    headers_raw = [str(c).strip() if c else "" for c in rows[0]]
+    header = [h.lower() for h in headers_raw]
 
     # Find the 'denumire' (product name) column
     name_col = None
@@ -7017,12 +7068,19 @@ def _parse_excel(data: bytes) -> Union[list[dict], list[str]]:
             name_col = header.index(keyword)
             break
 
-    # Find the 'id'/'cod' (product ID/code) column for Hermes naming
+    # Find the ID/code column — manual override takes priority.
+    # The "__none__" sentinel means "user explicitly chose no ID column"
+    # — skip auto-detect entirely so the file is treated as name-only.
     id_col = None
-    for keyword in ["id", "cod", "code", "id_produs", "cod_produs", "product_id", "sku", "barcode"]:
-        if keyword in header:
-            id_col = header.index(keyword)
-            break
+    explicit_no_id = (forced_id_column == "__none__")
+    if forced_id_column and not explicit_no_id:
+        target = forced_id_column.strip().lower()
+        for i, h in enumerate(header):
+            if h == target or h.strip() == target:
+                id_col = i
+                break
+    if id_col is None and not explicit_no_id:
+        id_col = _detect_id_column(header)
 
     if name_col is not None:
         data_rows = rows[1:]  # skip header
@@ -7043,9 +7101,11 @@ def _parse_excel(data: bytes) -> Union[list[dict], list[str]]:
         start = 1 if (first_val.lower() in header or len(first_val) < 20) else 0
         data_rows = rows[start:]
 
+    id_column_name = headers_raw[id_col] if id_col is not None and id_col < len(headers_raw) else None
+
     # If we have an ID column, return dicts; otherwise return strings
     if id_col is not None:
-        results = []
+        products: list = []
         for row in data_rows:
             if len(row) <= name_col or not row[name_col]:
                 continue
@@ -7056,29 +7116,31 @@ def _parse_excel(data: bytes) -> Union[list[dict], list[str]]:
             # Clean up numeric IDs (remove .0 from Excel float conversion)
             if prod_id.endswith(".0"):
                 prod_id = prod_id[:-2]
-            results.append({"id": prod_id, "denumire": denumire})
+            products.append({"id": prod_id, "denumire": denumire})
         wb.close()
-        return results
+        return {"products": products, "headers": headers_raw, "id_column": id_column_name}
     else:
         lines = [str(row[name_col]).strip() for row in data_rows
                  if len(row) > name_col and row[name_col] and str(row[name_col]).strip()]
         wb.close()
-        return [l for l in lines if l and l.lower() != "none"]
+        clean = [l for l in lines if l and l.lower() != "none"]
+        return {"products": clean, "headers": headers_raw, "id_column": None}
 
 
-def _parse_csv(data: bytes, delimiter: str) -> Union[list[dict], list[str]]:
-    """Parse CSV/TSV - extracts product data with optional id/cod column."""
+def _parse_csv(data: bytes, delimiter: str, forced_id_column: Optional[str] = None) -> dict:
+    """Parse CSV/TSV — extracts product data with optional id/cod column."""
     import csv as csv_mod
     text = data.decode("utf-8-sig", errors="replace")
     reader = list(csv_mod.reader(io.StringIO(text), delimiter=delimiter))
     if not reader:
-        return []
+        return {"products": [], "headers": [], "id_column": None}
 
     # Also try semicolon (common in RO)
     if delimiter == "," and all(len(r) <= 1 for r in reader[:5]):
         reader = list(csv_mod.reader(io.StringIO(text), delimiter=";"))
 
-    header = [str(c).lower().strip() for c in reader[0]] if reader else []
+    headers_raw = [str(c).strip() for c in reader[0]] if reader else []
+    header = [h.lower() for h in headers_raw]
 
     # Find name column
     name_col = None
@@ -7087,16 +7149,23 @@ def _parse_csv(data: bytes, delimiter: str) -> Union[list[dict], list[str]]:
             name_col = header.index(keyword)
             break
 
-    # Find ID column
+    # Manual override → fall back to auto-detect.
+    # The "__none__" sentinel forces "no ID column" (user opted out explicitly).
     id_col = None
-    for keyword in ["id", "cod", "code", "id_produs", "cod_produs", "product_id", "sku", "barcode"]:
-        if keyword in header:
-            id_col = header.index(keyword)
-            break
+    explicit_no_id = (forced_id_column == "__none__")
+    if forced_id_column and not explicit_no_id:
+        target = forced_id_column.strip().lower()
+        for i, h in enumerate(header):
+            if h == target or h.strip() == target:
+                id_col = i
+                break
+    if id_col is None and not explicit_no_id:
+        id_col = _detect_id_column(header)
+
+    id_column_name = headers_raw[id_col] if id_col is not None and id_col < len(headers_raw) else None
 
     if name_col is not None and id_col is not None:
-        # Return dicts with id + denumire
-        results = []
+        products: list = []
         for row in reader[1:]:
             if len(row) <= name_col or not row[name_col].strip():
                 continue
@@ -7104,12 +7173,13 @@ def _parse_csv(data: bytes, delimiter: str) -> Union[list[dict], list[str]]:
             prod_id = row[id_col].strip() if len(row) > id_col else ""
             if prod_id.endswith(".0"):
                 prod_id = prod_id[:-2]
-            results.append({"id": prod_id, "denumire": denumire})
-        return results
+            products.append({"id": prod_id, "denumire": denumire})
+        return {"products": products, "headers": headers_raw, "id_column": id_column_name}
 
     if name_col is not None:
-        return [row[name_col].strip() for row in reader[1:]
-                if len(row) > name_col and row[name_col].strip()]
+        names = [row[name_col].strip() for row in reader[1:]
+                 if len(row) > name_col and row[name_col].strip()]
+        return {"products": names, "headers": headers_raw, "id_column": None}
 
     # Fallback: first column with longest average text
     if reader:
@@ -7122,8 +7192,10 @@ def _parse_csv(data: bytes, delimiter: str) -> Union[list[dict], list[str]]:
             if avg > best_avg:
                 best_avg = avg
                 best_col = ci
-        return [row[best_col].strip() for row in reader[1:]
-                if len(row) > best_col and row[best_col].strip()]
+        names = [row[best_col].strip() for row in reader[1:]
+                 if len(row) > best_col and row[best_col].strip()]
+        return {"products": names, "headers": headers_raw, "id_column": None}
+    return {"products": [], "headers": headers_raw, "id_column": None}
 
     return []
 
@@ -7243,7 +7315,10 @@ def save_config():
 
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
-    """Upload a file and extract product names from it."""
+    """Upload a file and extract product names from it.
+    Optional form field `id_column` overrides auto-detection of the ID column —
+    used when the user picks a different column from the UI dropdown.
+    """
     if "file" not in request.files:
         return jsonify({"error": "No file provided"}), 400
 
@@ -7251,8 +7326,13 @@ def upload_file():
     if not f.filename:
         return jsonify({"error": "Empty filename"}), 400
 
+    forced_id = (request.form.get("id_column") or "").strip() or None
+
     try:
-        products = parse_uploaded_file(f)
+        result = parse_uploaded_file(f, forced_id_column=forced_id)
+        products = result["products"]
+        headers = result.get("headers", [])
+        id_column = result.get("id_column")
         # Normalize: if parser returned list of strings, wrap in dicts
         if products and isinstance(products[0], str):
             products_out = [{"denumire": p} for p in products]
@@ -7265,6 +7345,8 @@ def upload_file():
             "count": len(products_out),
             "filename": f.filename,
             "has_ids": has_ids,
+            "headers": headers,
+            "id_column": id_column,
         })
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

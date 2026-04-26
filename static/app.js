@@ -72,8 +72,12 @@ function clearInput() {
   productInput.value = '';
   fileProducts = [];
   fileHasIds = false;
+  lastUploadedFile = null;
+  lastUploadHeaders = [];
   document.getElementById('fileBadge').style.display = 'none';
   document.getElementById('fileInput').value = '';
+  const picker = document.getElementById('idColumnPicker');
+  if (picker) { picker.style.display = 'none'; picker.innerHTML = ''; }
   updateLineCount();
 }
 
@@ -102,8 +106,19 @@ dropZone.addEventListener('drop', e => {
   if (file) handleFileSelect(file);
 });
 
-async function handleFileSelect(file) {
+// Keep the uploaded file around so the user can re-parse it after picking
+// a different ID column from the dropdown — avoids re-asking for the file.
+let lastUploadedFile = null;
+let lastUploadHeaders = [];
+// Monotonic counter — every reparse increments this. The response handler
+// drops responses whose seq is no longer the latest, preventing an older
+// (slower) request from clobbering state set by a newer one.
+let _uploadSeq = 0;
+
+async function handleFileSelect(file, forcedIdColumn) {
   if (!file) return;
+  lastUploadedFile = file;
+  const mySeq = ++_uploadSeq;
 
   const badge = document.getElementById('fileBadge');
   badge.innerHTML = `<span class="file-info">Se procesează <strong>${escapeHtml(file.name)}</strong>...</span>`;
@@ -111,10 +126,18 @@ async function handleFileSelect(file) {
 
   const formData = new FormData();
   formData.append('file', file);
+  // Always send when defined (including the "__none__" sentinel) so the
+  // user's explicit "no ID" choice isn't silently overridden by auto-detect.
+  if (forcedIdColumn !== undefined && forcedIdColumn !== null && forcedIdColumn !== '') {
+    formData.append('id_column', forcedIdColumn);
+  }
 
   try {
     const resp = await fetch('/api/upload', { method: 'POST', body: formData });
     const data = await resp.json();
+
+    // Drop stale response — a newer reparse has been issued since.
+    if (mySeq !== _uploadSeq) return;
 
     if (data.error) {
       badge.innerHTML = `
@@ -125,20 +148,60 @@ async function handleFileSelect(file) {
 
     fileProducts = data.products;        // list of {id, denumire} dicts or strings
     fileHasIds = data.has_ids || false;   // whether Excel had id/cod column
+    lastUploadHeaders = data.headers || [];
 
-    const idInfo = data.has_ids ? ' (cu ID-uri)' : '';
+    const idInfo = data.has_ids ? ` (ID din coloana "${data.id_column || ''}")` : '';
     badge.innerHTML = `
-      <span class="file-info"><strong>${escapeHtml(file.name)}</strong> &mdash; ${data.count} produse${idInfo}</span>
+      <span class="file-info"><strong>${escapeHtml(file.name)}</strong> &mdash; ${data.count} produse${escapeHtml(idInfo)}</span>
       <button class="btn-remove" onclick="clearInput()" title="Elimină"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>`;
+
+    // Render the ID-column picker if the file has tabular headers
+    renderIdColumnPicker(data.headers || [], data.id_column);
 
     // Display denumire lines in the textarea for visual reference
     const lines = data.products.map(p => typeof p === 'string' ? p : (p.denumire || ''));
     productInput.value = lines.join('\n');
     updateLineCount();
   } catch (err) {
+    if (mySeq !== _uploadSeq) return;  // ignore stale errors too
     badge.innerHTML = `
       <span class="file-info" style="color:var(--danger)">Eroare: ${escapeHtml(err.message)}</span>
       <button class="btn-remove" onclick="clearInput()" title="Elimină"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>`;
+  }
+}
+
+function renderIdColumnPicker(headers, currentIdColumn) {
+  const container = document.getElementById('idColumnPicker');
+  if (!container) return;
+  if (!headers || headers.length === 0) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+  const options = ['<option value="__none__">— fără ID —</option>']
+    .concat(headers.map(h => {
+      const sel = (currentIdColumn && h === currentIdColumn) ? ' selected' : '';
+      return `<option value="${escapeHtml(h)}"${sel}>${escapeHtml(h)}</option>`;
+    }))
+    .join('');
+  container.innerHTML = `
+    <label class="config-label" style="font-size:0.82rem;color:var(--muted);margin-top:8px;">
+      Coloana ID (pentru numele fișierului)
+    </label>
+    <select id="idColumnSelect" onchange="onIdColumnChange()"
+      style="width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--input-bg);color:var(--text);font-size:13px;margin-top:4px;">
+      ${options}
+    </select>
+    <div style="font-size:0.75rem;color:var(--muted);margin-top:3px;">
+      Detectat automat. Schimbă pentru a folosi altă coloană.
+    </div>`;
+  container.style.display = 'block';
+}
+
+function onIdColumnChange() {
+  const newCol = document.getElementById('idColumnSelect')?.value;
+  if (lastUploadedFile && newCol !== undefined && newCol !== null) {
+    handleFileSelect(lastUploadedFile, newCol);
   }
 }
 
