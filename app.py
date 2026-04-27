@@ -42,7 +42,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.8"
+APP_VERSION = "1.3.9"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -6137,6 +6137,11 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
 
     results = []
     stats = {"total": len(products), "success": 0, "failed": 0, "images_saved": 0}
+    job_started_at = time.time()
+    telemetry_log(
+        f"🚀 Job started — `{job_id}` | {len(products)} products | "
+        f"priority sites: {', '.join(priority_sites) or '—'}"
+    )
 
     for idx, product in enumerate(products):
         # Check if job was cancelled
@@ -6930,9 +6935,17 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                         "denumire": denumire,
                     }
             except Exception as e:
-                print(f"[SAVE-FAIL] {denumire} → filename='{filename}' filepath='{filepath}': {type(e).__name__}: {e}")
+                # Local log: full path for debugging on the user's machine
+                err_msg = f"[SAVE-FAIL] {denumire} → filename='{filename}' filepath='{filepath}': {type(e).__name__}: {e}"
+                print(err_msg)
                 import traceback
                 print(traceback.format_exc())
+                # Remote telemetry: sanitized — no absolute paths (which contain
+                # usernames / home-directory structure on the client's machine)
+                telemetry_log(
+                    f"❌ SAVE-FAIL: `{denumire[:60]}` → "
+                    f"filename=`{filename}` | {type(e).__name__}: {str(e)[:150]}"
+                )
 
         status = "ok" if saved_images else "failed"
         print(f"[SAVE-RESULT] {denumire}: {len(saved_images)} saved, status={status}")
@@ -6964,6 +6977,13 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
         "stats": stats,
         "output_dir": str(output_dir.resolve()),
     })
+    telemetry_log(
+        f"✅ Job done — `{job_id}` | "
+        f"{stats['success']}/{stats['total']} succeeded | "
+        f"{stats['images_saved']} images saved | "
+        f"{stats['failed']} failed | "
+        f"duration: {int(time.time() - job_started_at)}s"
+    )
 
 
 # ─── FILE PARSERS ─────────────────────────────────────────────────────────
@@ -8037,6 +8057,164 @@ def apply_update():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ─── TELEMETRY ────────────────────────────────────────────────────────────
+
+# Discord webhook for install/run pings + key job events.
+# Override via env var IMAGESCRAPER_WEBHOOK_URL, disable with IMAGESCRAPER_NO_TELEMETRY=1.
+TELEMETRY_WEBHOOK_URL = os.environ.get(
+    "IMAGESCRAPER_WEBHOOK_URL",
+    "https://discord.com/api/webhooks/1498414303630459023/udnUPctlBBUsn0A8VohcJzBa1FOksEXxnbAtxgvE2Is3Vcgs5Cqv6mXt9KdLnupXo6IU",
+)
+
+
+def _telemetry_get_install_id() -> tuple[str, bool]:
+    """Return (install_id, is_new_install). Persisted in ~/.image-scraper/install_id.txt."""
+    id_dir = Path.home() / ".image-scraper"
+    id_dir.mkdir(exist_ok=True)
+    id_file = id_dir / "install_id.txt"
+    is_new = not id_file.exists()
+    if is_new:
+        id_file.write_text(str(uuid.uuid4()))
+    return id_file.read_text().strip(), is_new
+
+
+# Background queue + worker that batches log lines into Discord messages.
+# Discord rate-limits at ~5 requests / 2 sec per webhook, and each message
+# can hold 2000 chars — batching is essential.
+_telemetry_queue: "queue.Queue[str]" = queue.Queue()
+_telemetry_worker_started = False
+_telemetry_worker_lock = threading.Lock()
+
+
+def _telemetry_worker_loop():
+    """Drain the queue every 5s and POST a batched message to Discord.
+    Discord caps content at 2000 chars per message — chunk if needed.
+    """
+    while True:
+        try:
+            time.sleep(5)
+            if not TELEMETRY_WEBHOOK_URL:
+                continue
+            lines: list[str] = []
+            try:
+                while True:
+                    lines.append(_telemetry_queue.get_nowait())
+            except queue.Empty:
+                pass
+            if not lines:
+                continue
+            install_id, _ = _telemetry_get_install_id()
+            prefix = f"`[{install_id[:8]}]`"
+            # Build one or more sub-2000-char messages
+            buffer = prefix
+            for line in lines:
+                # +1 for the newline we'll add
+                if len(buffer) + len(line) + 1 > 1900:
+                    try:
+                        requests.post(TELEMETRY_WEBHOOK_URL,
+                                      json={"content": buffer}, timeout=3)
+                    except Exception:
+                        pass
+                    buffer = prefix
+                buffer += "\n" + line
+            if buffer.strip() and buffer != prefix:
+                try:
+                    requests.post(TELEMETRY_WEBHOOK_URL,
+                                  json={"content": buffer}, timeout=3)
+                except Exception:
+                    pass
+        except Exception:
+            pass  # worker must never die
+
+
+def _ensure_telemetry_worker():
+    """Start the background worker on first use (one-shot, thread-safe)."""
+    global _telemetry_worker_started
+    if _telemetry_worker_started:
+        return
+    with _telemetry_worker_lock:
+        if _telemetry_worker_started:
+            return
+        if not TELEMETRY_WEBHOOK_URL or os.environ.get("IMAGESCRAPER_NO_TELEMETRY"):
+            _telemetry_worker_started = True
+            return
+        threading.Thread(target=_telemetry_worker_loop, daemon=True).start()
+        _telemetry_worker_started = True
+
+
+def telemetry_log(message: str) -> None:
+    """Queue a log line for delivery to Discord.
+    Best-effort, non-blocking. Truncates long lines to keep messages tidy.
+    """
+    if not TELEMETRY_WEBHOOK_URL or os.environ.get("IMAGESCRAPER_NO_TELEMETRY"):
+        return
+    _ensure_telemetry_worker()
+    try:
+        # Cap any single line at 500 chars so one giant traceback can't
+        # eat an entire message budget.
+        if len(message) > 500:
+            message = message[:497] + "..."
+        _telemetry_queue.put_nowait(message)
+    except Exception:
+        pass
+
+
+class _DiscordLogHandler(logging.Handler):
+    """Forwards WARNING+ logger records to the Discord telemetry queue."""
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if record.levelno < logging.WARNING:
+                return
+            level = record.levelname
+            msg = self.format(record)
+            telemetry_log(f"⚠️ **{level}** — {msg}")
+        except Exception:
+            pass
+
+
+def _telemetry_ping():
+    """Send anonymous install/run notification to Discord webhook.
+    Best-effort, never raises, never blocks startup.
+
+    What's sent at install/run time: APP_VERSION, OS, Python version,
+    and a random install_id (UUID generated on first run, persisted locally).
+    Does NOT send hostname, username, or IP.
+
+    What's sent during job runs (via telemetry_log): job summaries (counts +
+    duration), product names from failed saves, output filenames (without
+    absolute paths), and any WARNING-level logger messages.
+
+    Disable with env var: IMAGESCRAPER_NO_TELEMETRY=1
+    """
+    try:
+        if os.environ.get("IMAGESCRAPER_NO_TELEMETRY"):
+            return
+        if not TELEMETRY_WEBHOOK_URL:
+            return
+
+        import platform as _plat
+        import sys as _sys
+
+        install_id, is_new_install = _telemetry_get_install_id()
+
+        event = "🆕 NEW INSTALL" if is_new_install else "▶️ Run"
+        os_label = f"{_plat.system()} {_plat.release()}".strip()
+        py_label = f"Python {_sys.version_info.major}.{_sys.version_info.minor}"
+
+        message = (
+            f"{event} — `v{APP_VERSION}` | {os_label} | {py_label} | id: `{install_id[:8]}`"
+        )
+        # Send the install/run ping immediately (don't queue it — user
+        # wants to know the moment a fresh launch happens).
+        requests.post(
+            TELEMETRY_WEBHOOK_URL,
+            json={"content": message},
+            timeout=3,
+        )
+    except Exception:
+        pass  # never block startup or surface errors to the user
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -8045,6 +8223,16 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+
+    # Fire-and-forget telemetry ping in background — never blocks startup
+    threading.Thread(target=_telemetry_ping, daemon=True).start()
+
+    # Forward WARNING+ log records to Discord telemetry queue (batched)
+    if TELEMETRY_WEBHOOK_URL and not os.environ.get("IMAGESCRAPER_NO_TELEMETRY"):
+        _discord_handler = _DiscordLogHandler()
+        _discord_handler.setLevel(logging.WARNING)
+        _discord_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
+        logger.addHandler(_discord_handler)
 
     print(f"\n  Image Scraper UI running at http://localhost:{args.port}")
     print(f"  [v{APP_VERSION}]\n")
