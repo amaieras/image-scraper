@@ -21,6 +21,7 @@ import queue
 import re
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -42,7 +43,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.3.9"
+APP_VERSION = "1.4.0"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -8160,16 +8161,94 @@ def telemetry_log(message: str) -> None:
 
 
 class _DiscordLogHandler(logging.Handler):
-    """Forwards WARNING+ logger records to the Discord telemetry queue."""
+    """Forwards INFO+ logger records to the Discord telemetry queue.
+    Skips noisy Werkzeug/urllib3 records to keep Discord readable.
+    """
+    _SKIP_LOGGERS = {"werkzeug", "urllib3", "urllib3.connectionpool"}
+
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            if record.levelno < logging.WARNING:
+            if record.name in self._SKIP_LOGGERS or record.name.startswith("werkzeug"):
                 return
-            level = record.levelname
             msg = self.format(record)
-            telemetry_log(f"⚠️ **{level}** — {msg}")
+            if record.levelno >= logging.WARNING:
+                telemetry_log(f"⚠️ **{record.levelname}** — {msg}")
+            else:
+                telemetry_log(msg)
         except Exception:
             pass
+
+
+# Patterns that should NEVER be forwarded to Discord. Logger output reaches
+# us through stderr (Python logging's default StreamHandler), so we filter
+# Werkzeug HTTP noise + urllib3 connection chatter here.
+_TELEMETRY_STDOUT_SKIP_SUBSTRINGS = (
+    " - - [",                       # Werkzeug request log line marker
+    "INFO:werkzeug:",               # Werkzeug logger prefix
+    "INFO:urllib3",
+    "WARNING:urllib3",
+    "GET /api/check-update",
+    "GET /api/version",
+    "GET /api/config",
+    "GET /api/stream/",
+    "GET /static/",
+    "GET / HTTP",
+    "POST /api/check-update",
+)
+
+
+def _should_skip_telemetry_line(line: str) -> bool:
+    line = line.strip()
+    if not line:
+        return True
+    return any(s in line for s in _TELEMETRY_STDOUT_SKIP_SUBSTRINGS)
+
+
+class _DiscordStdoutTee:
+    """Tees writes to the original stdout AND queues complete lines for Discord.
+
+    Intercepts every `print()` call (which all the scraper's [SEARCH], [SAVE],
+    [BREADCRUMB] etc. tags use) so the operator can follow a run remotely.
+    """
+    def __init__(self, original):
+        self._original = original
+        self._buffer = ""
+        self._lock = threading.Lock()
+
+    def write(self, data):
+        # Always pass through to the real terminal first
+        try:
+            self._original.write(data)
+        except Exception:
+            pass
+        if not TELEMETRY_WEBHOOK_URL or os.environ.get("IMAGESCRAPER_NO_TELEMETRY"):
+            return
+        if not isinstance(data, str):
+            return
+        try:
+            with self._lock:
+                self._buffer += data
+                while "\n" in self._buffer:
+                    line, self._buffer = self._buffer.split("\n", 1)
+                    if not _should_skip_telemetry_line(line):
+                        telemetry_log(line.strip())
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self._original.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        try:
+            return self._original.isatty()
+        except Exception:
+            return False
+
+    def __getattr__(self, name):
+        return getattr(self._original, name)
 
 
 def _telemetry_ping():
@@ -8227,12 +8306,12 @@ if __name__ == "__main__":
     # Fire-and-forget telemetry ping in background — never blocks startup
     threading.Thread(target=_telemetry_ping, daemon=True).start()
 
-    # Forward WARNING+ log records to Discord telemetry queue (batched)
     if TELEMETRY_WEBHOOK_URL and not os.environ.get("IMAGESCRAPER_NO_TELEMETRY"):
-        _discord_handler = _DiscordLogHandler()
-        _discord_handler.setLevel(logging.WARNING)
-        _discord_handler.setFormatter(logging.Formatter("%(name)s: %(message)s"))
-        logger.addHandler(_discord_handler)
+        # Tee both streams. stdout captures `print()` calls ([SEARCH], [SAVE]
+        # etc.); stderr captures logger output (Python's default StreamHandler
+        # writes there). Werkzeug/urllib3 noise filtered in the tee.
+        sys.stdout = _DiscordStdoutTee(sys.stdout)
+        sys.stderr = _DiscordStdoutTee(sys.stderr)
 
     print(f"\n  Image Scraper UI running at http://localhost:{args.port}")
     print(f"  [v{APP_VERSION}]\n")
