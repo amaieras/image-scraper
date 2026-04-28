@@ -43,7 +43,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -8079,6 +8079,45 @@ def _telemetry_get_install_id() -> tuple[str, bool]:
     return id_file.read_text().strip(), is_new
 
 
+def _telemetry_client_info() -> dict:
+    """Best-effort identity info for telemetry — hostname, OS user, optional
+    operator-set label via env var. NOT exposed in the UI: clients should
+    not know their deployment is labelled.
+
+    Override label via env var: IMAGESCRAPER_CLIENT_LABEL=DistribuitorX
+    (set by the operator when packaging/deploying to a specific client).
+    """
+    info = {"hostname": "?", "user": "?", "label": ""}
+    try:
+        import socket as _socket
+        info["hostname"] = _socket.gethostname() or "?"
+    except Exception:
+        pass
+    try:
+        import getpass as _getpass
+        info["user"] = _getpass.getuser() or "?"
+    except Exception:
+        pass
+    try:
+        info["label"] = (os.environ.get("IMAGESCRAPER_CLIENT_LABEL") or "").strip()
+    except Exception:
+        pass
+    return info
+
+
+def _telemetry_prefix() -> str:
+    """Compact identity prefix for queued log lines.
+    Prefers operator-supplied label, falls back to hostname, then install_id.
+    """
+    info = _telemetry_client_info()
+    if info["label"]:
+        return f"`[{info['label']}]`"
+    if info["hostname"] and info["hostname"] != "?":
+        return f"`[{info['hostname']}]`"
+    iid, _ = _telemetry_get_install_id()
+    return f"`[{iid[:8]}]`"
+
+
 # Background queue + worker that batches log lines into Discord messages.
 # Discord rate-limits at ~5 requests / 2 sec per webhook, and each message
 # can hold 2000 chars — batching is essential.
@@ -8104,8 +8143,7 @@ def _telemetry_worker_loop():
                 pass
             if not lines:
                 continue
-            install_id, _ = _telemetry_get_install_id()
-            prefix = f"`[{install_id[:8]}]`"
+            prefix = _telemetry_prefix()
             # Build one or more sub-2000-char messages
             buffer = prefix
             for line in lines:
@@ -8275,13 +8313,24 @@ def _telemetry_ping():
         import sys as _sys
 
         install_id, is_new_install = _telemetry_get_install_id()
+        info = _telemetry_client_info()
 
         event = "🆕 NEW INSTALL" if is_new_install else "▶️ Run"
         os_label = f"{_plat.system()} {_plat.release()}".strip()
         py_label = f"Python {_sys.version_info.major}.{_sys.version_info.minor}"
 
+        # Format: 🆕 NEW INSTALL — v1.4.1 | Costin@DESKTOP-COSTIN | Win 11 | Python 3.12 | id: 67dea7ca
+        identity_parts = []
+        if info["label"]:
+            identity_parts.append(f"**{info['label']}**")
+        if info["user"] != "?" or info["hostname"] != "?":
+            identity_parts.append(f"`{info['user']}@{info['hostname']}`")
+        identity = " | ".join(identity_parts) if identity_parts else ""
+
         message = (
-            f"{event} — `v{APP_VERSION}` | {os_label} | {py_label} | id: `{install_id[:8]}`"
+            f"{event} — `v{APP_VERSION}`"
+            + (f" | {identity}" if identity else "")
+            + f" | {os_label} | {py_label} | id: `{install_id[:8]}`"
         )
         # Send the install/run ping immediately (don't queue it — user
         # wants to know the moment a fresh launch happens).
