@@ -63,6 +63,7 @@
           <div class="drop-zone" id="dropZone">
             <input type="file" id="fileInput"
               accept=".xlsx,.xls,.csv,.tsv,.txt,.docx,.pdf"
+              onclick="this.value=null"
               onchange="handleFileSelect(this.files[0])">
             <div class="drop-icon"><i data-lucide="upload" style="width:32px;height:32px;"></i></div>
             <div class="drop-text">

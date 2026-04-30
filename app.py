@@ -43,7 +43,7 @@ from PIL import Image, ImageOps, ImageFilter
 
 # ─── APP SETUP ────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 GITHUB_REPO = "amaieras/image-scraper"
 
 app = Flask(__name__)
@@ -6144,8 +6144,11 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
         f"priority sites: {', '.join(priority_sites) or '—'}"
     )
 
-    for idx, product in enumerate(products):
-        # Check if job was cancelled
+    # Stop responsiveness: callers sprinkle this at high-cost boundaries (before
+    # download, inside the candidate-eval loop, before save). On cancellation we
+    # send job_done and the caller returns. Without these, stop only takes effect
+    # at the next product (30-60s of search/download/CLIP/save in between).
+    def bail_if_cancelled():
         job = active_jobs.get(job_id)
         if job and job.get("status") == "cancelled":
             send("job_done", {
@@ -6153,6 +6156,11 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                 "output_dir": str(output_dir.resolve()),
                 "cancelled": True,
             })
+            return True
+        return False
+
+    for idx, product in enumerate(products):
+        if bail_if_cancelled():
             return
 
         denumire = product["denumire"].strip()
@@ -6369,6 +6377,9 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
 
         source_used = search_urls[0][1] if search_urls else "none"
 
+        if bail_if_cancelled():
+            return
+
         # ── DOWNLOAD ALL IN PARALLEL ──
         all_urls = [u for u, _ in search_urls]
         url_to_source = {u: s for u, s in search_urls}
@@ -6400,6 +6411,8 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
         seen_hashes = set()
 
         for url, src in search_urls:
+            if bail_if_cancelled():
+                return
             data = downloaded.get(url)
             if not data:
                 continue
@@ -6884,6 +6897,9 @@ def run_scraper_job(job_id: str, products: list[dict], config: dict,
                                                      "passed": True, "reasons": []},
                                          30, url_ulr, ulr_hash, "ultra-lastresort"))
                 break
+
+        if bail_if_cancelled():
+            return
 
         print(f"[SAVE] {denumire}: {len(valid_candidates)} valid candidates, will save up to {images_per_product}")
         for data, qc, rel_score, url, img_hash, src in valid_candidates[:images_per_product]:

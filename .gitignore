@@ -15,6 +15,9 @@ venv/
 *.swp
 *.swo
 
+# Claude Code worktrees (agent-isolated copies)
+.claude/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -106,6 +106,15 @@ dropZone.addEventListener('drop', e => {
   if (file) handleFileSelect(file);
 });
 
+// Click anywhere in the drop zone opens the OS file picker. The input itself
+// is display:none, so we forward the click programmatically.
+// Guard against re-entry: input.click() dispatches a click event whose target
+// is the input — without this check it bubbles back here and we recurse.
+dropZone.addEventListener('click', (e) => {
+  if (e.target.id === 'fileInput') return;
+  document.getElementById('fileInput').click();
+});
+
 // Keep the uploaded file around so the user can re-parse it after picking
 // a different ID column from the dropdown — avoids re-asking for the file.
 let lastUploadedFile = null;
@@ -119,6 +128,14 @@ async function handleFileSelect(file, forcedIdColumn) {
   if (!file) return;
   lastUploadedFile = file;
   const mySeq = ++_uploadSeq;
+
+  // Reparse from scratch on every import — wipe prior parse state so a new
+  // file with the same name (or a failed upload) can never reuse stale data.
+  fileProducts = [];
+  fileHasIds = false;
+  lastUploadHeaders = [];
+  const picker = document.getElementById('idColumnPicker');
+  if (picker) { picker.style.display = 'none'; picker.innerHTML = ''; }
 
   const badge = document.getElementById('fileBadge');
   badge.innerHTML = `<span class="file-info">Se procesează <strong>${escapeHtml(file.name)}</strong>...</span>`;

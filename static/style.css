@@ -162,6 +162,14 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus {
   border-color: var(--accent);
 }
 select { cursor: pointer; }
+/* Windows Chromium draws the dropdown popup with the OS's system colors and
+ * does NOT inherit the select's color/background — without this, options
+ * render as white-on-white in dark theme. Explicit option styling forces
+ * the renderer to use our theme colors for the popup items. */
+select option {
+  background: var(--surface2);
+  color: var(--text);
+}
 
 /* ─── Toggles ─── */
 .toggle-row {
@@ -497,9 +505,7 @@ a.badge:hover { color: var(--accent-light); text-decoration: underline; }
 .drop-zone .drop-formats {
   font-size: 11px; color: var(--text-dim); opacity: 0.6; margin-top: 6px;
 }
-.drop-zone input[type="file"] {
-  position: absolute; inset: 0; opacity: 0; cursor: pointer;
-}
+.drop-zone input[type="file"] { display: none; }
 
 /* ─── Tabs ─── */
 .input-tabs {
